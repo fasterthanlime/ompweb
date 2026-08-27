@@ -142,8 +142,6 @@ export function AppShell() {
       // ignore storage quota / privacy-mode errors
     }
   }, [sidebarWidth, sidebarResizing]);
-  const [appUpdateAvailable, setAppUpdateAvailable] = useState(false);
-  const [ompUpdateAvailable, setOmpUpdateAvailable] = useState(false);
   // On mobile the sidebar is an overlay drawer; hide it by default so the chat
   // is visible on load. Runs once the breakpoint resolves after hydration.
   useEffect(() => {
@@ -165,79 +163,6 @@ export function AppShell() {
       active.blur();
     }
   }, [sidebarOpen, mobileSidebarReady]);
-  useEffect(() => {
-    const controller = new AbortController();
-    void fetch("/api/omp-update", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "check" }),
-      signal: controller.signal,
-    })
-      .then((response) => response.ok ? response.json() : null)
-      .then((data: { currentVersion?: string | null; availableVersion?: string | null; updateAvailable?: boolean; updateCommand?: string } | null) => {
-        setOmpUpdateAvailable(Boolean(data?.updateAvailable));
-        if (!data?.updateAvailable || !data.availableVersion) return;
-        const cmd = data.updateCommand || "omp update";
-        toast.info(
-          translate("appShell.ompUpdateAvailable"),
-          <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 4 }}>
-            <div>{translate("appShell.updateVersion", { current: data.currentVersion ?? "?", available: data.availableVersion })}</div>
-            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              <code style={{ background: "var(--bg-panel)", padding: "3px 7px", borderRadius: "var(--radius-control)", fontSize: 11, fontFamily: "var(--font-mono)" }}>
-                {cmd}
-              </code>
-              <button
-                type="button"
-                onClick={() => {
-                  void copyText(cmd)
-                    .then(() => toast.success(translate("appShell.commandCopied")))
-                    .catch(() => toast.error(translate("appShell.commandCopyFailed")));
-                }}
-                style={{ padding: "3px 7px", border: "1px solid var(--border)", borderRadius: "var(--radius-control)", background: "var(--bg-panel)", color: "var(--text)", cursor: "pointer", fontSize: 11 }}
-              >
-                {translate("appShell.copyCommand")}
-              </button>
-            </div>
-          </div>
-        );
-      })
-      .catch(() => {});
-    return () => controller.abort();
-  }, []);
-  useEffect(() => {
-    const controller = new AbortController();
-    void fetch("/api/app-update", { signal: controller.signal })
-      .then((response) => response.ok ? response.json() : null)
-      .then((data: { currentVersion?: string; availableVersion?: string | null; updateAvailable?: boolean; updateCommand?: string } | null) => {
-        setAppUpdateAvailable(Boolean(data?.updateAvailable));
-        if (!data?.updateAvailable || !data.availableVersion) return;
-        const cmd = data.updateCommand || "npm install -g @kahme247/ompweb";
-        toast.info(
-          translate("appShell.appUpdateAvailable"),
-          <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 4 }}>
-            <div>{translate("appShell.updateVersion", { current: data.currentVersion ?? "?", available: data.availableVersion })}</div>
-            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              <code style={{ background: "var(--bg-panel)", padding: "3px 7px", borderRadius: "var(--radius-control)", fontSize: 11, fontFamily: "var(--font-mono)" }}>
-                {cmd}
-              </code>
-              <button
-                type="button"
-                onClick={() => {
-                  void copyText(cmd)
-                    .then(() => toast.success(translate("appShell.commandCopied")))
-                    .catch(() => toast.error(translate("appShell.commandCopyFailed")));
-                }}
-                style={{ padding: "3px 7px", border: "1px solid var(--border)", borderRadius: "var(--radius-control)", background: "var(--bg-panel)", color: "var(--text)", cursor: "pointer", fontSize: 11 }}
-              >
-                {translate("appShell.copyCommand")}
-              </button>
-            </div>
-          </div>
-        );
-      })
-      .catch(() => {});
-    return () => controller.abort();
-  }, []);
   const chatInputRef = useRef<ChatInputHandle | null>(null);
   const topBarRef = useRef<HTMLDivElement>(null);
 
@@ -829,7 +754,7 @@ export function AppShell() {
         onAtMentions={handleAtMentions}
         onOpenSettings={() => setSettingsTab("general")}
         onOpenArchive={() => setArchiveBrowserOpen(true)}
-        updateAvailable={appUpdateAvailable || ompUpdateAvailable}
+        updateAvailable={false}
       />
     </>
   );
@@ -1577,7 +1502,7 @@ export function AppShell() {
         <rect x="3" y="3" width="18" height="18" rx="2" /><line x1="15" y1="3" x2="15" y2="21" />
       </svg>
     </button>
-    {settingsTab && <SettingsConfig activeTab={settingsTab} toolCallsDefaultCollapsed={toolCallsDefaultCollapsed} onToolCallsDefaultCollapsedChange={handleToolCallsDefaultCollapsedChange} cwd={activeCwd ?? selectedSession?.cwd ?? newSessionCwd} sessionId={selectedSession?.id ?? null} onModelsSaved={() => setModelsRefreshKey((k) => k + 1)} onPluginsReloaded={() => setSessionKey((k) => k + 1)} onOmpUpdateAvailabilityChange={setOmpUpdateAvailable} onSelectTab={setSettingsTab} onClose={() => setSettingsTab(null)} />}
+    {settingsTab && <SettingsConfig activeTab={settingsTab} toolCallsDefaultCollapsed={toolCallsDefaultCollapsed} onToolCallsDefaultCollapsedChange={handleToolCallsDefaultCollapsedChange} cwd={activeCwd ?? selectedSession?.cwd ?? newSessionCwd} sessionId={selectedSession?.id ?? null} onModelsSaved={() => setModelsRefreshKey((k) => k + 1)} onPluginsReloaded={() => setSessionKey((k) => k + 1)} onOmpUpdateAvailabilityChange={() => {}} onSelectTab={setSettingsTab} onClose={() => setSettingsTab(null)} />}
     {archiveBrowserOpen && (
       <ArchiveBrowser
         open={archiveBrowserOpen}

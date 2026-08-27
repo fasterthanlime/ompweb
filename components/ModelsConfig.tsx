@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useRef, type CSSProperties } from "re
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { useI18n } from "@/lib/i18n";
 import { isSafeExternalUrl } from "@/lib/safe-url";
-import { omitUntouchedModelDrafts } from "@/lib/models-config-drafts";
+import { REDACTED_MODEL_CONFIG_VALUE, modelConfigSecretInputValue, omitUntouchedModelDrafts, preserveModelConfigSecret } from "@/lib/models-config-drafts";
 import { formatApiError } from "@/lib/i18n/api-error";
 import {
   Dialog,
@@ -532,7 +532,7 @@ function ProviderDetail({ name, provider, onChange, onRename, onDelete }: {
 
   const apiKeyValidate = () => {
     if (provider.auth === "none") return null;
-    if (!provider.apiKey || !provider.apiKey.trim()) return t("modelsConfig.errorApiKeyRequired");
+    if (!provider.apiKey?.trim()) return t("modelsConfig.errorApiKeyRequired");
     return null;
   };
   const apiKeyV = useFieldValidation(apiKeyValidate);
@@ -660,9 +660,9 @@ function ProviderDetail({ name, provider, onChange, onRename, onDelete }: {
           error={apiKeyV.error}
         >
           <SecretInput
-            value={provider.apiKey ?? ""}
-            onChange={(v) => { set("apiKey", v || undefined); apiKeyV.onChange(); }}
-            placeholder={t("modelsConfig.apiKeyPlaceholder")}
+            value={modelConfigSecretInputValue(provider.apiKey)}
+            onChange={(v) => { set("apiKey", preserveModelConfigSecret(v, provider.apiKey)); apiKeyV.onChange(); }}
+            placeholder={provider.apiKey === REDACTED_MODEL_CONFIG_VALUE ? "Saved value — enter a replacement to change" : t("modelsConfig.apiKeyPlaceholder")}
             invalid={Boolean(apiKeyV.error)}
             error={apiKeyV.error}
             onBlurValidate={apiKeyV.onBlur}

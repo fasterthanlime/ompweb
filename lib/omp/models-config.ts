@@ -3,6 +3,7 @@ import { basename, dirname, join } from "path";
 import { isMap, isScalar, isSeq, parseDocument, stringify, type Document } from "yaml";
 import { getModelsConfigPath } from "./paths";
 import { isRecord } from "../type-guards";
+import { REDACTED_MODEL_CONFIG_VALUE } from "../models-config-drafts";
 
 /**
  * Direct YAML access to omp's custom-models file (~/.omp/agent/models.yml).
@@ -65,6 +66,7 @@ export interface ModelsFileConfig {
   providers?: Record<string, ProviderConfig>;
   [key: string]: unknown;
 }
+
 
 /** Mirrors validateProviderConfiguration(mode: "models-config") closely enough
  * to reject configs omp itself would refuse to load. Throws on failure. */
@@ -189,6 +191,71 @@ export function readModelsConfig(): ModelsFileConfig {
   return readModelsConfigFile().config;
 }
 
+function redactConfiguredHeaders(value: Record<string, string> | undefined): Record<string, string> | undefined {
+  if (!value) return value;
+  return Object.fromEntries(Object.entries(value).map(([name, headerValue]) => [
+    name,
+    headerValue.length > 0 ? REDACTED_MODEL_CONFIG_VALUE : headerValue,
+  ]));
+}
+
+export function redactModelsConfig(config: ModelsFileConfig): ModelsFileConfig {
+  if (!isRecord(config.providers)) return config;
+  const providers = Object.fromEntries(Object.entries(config.providers).map(([name, provider]) => {
+    const models = Array.isArray(provider.models)
+      ? provider.models.map((model) => ({ ...model, headers: redactConfiguredHeaders(model.headers) }))
+      : provider.models;
+    return [name, {
+      ...provider,
+      ...(typeof provider.apiKey === "string" && provider.apiKey.length > 0
+        ? { apiKey: REDACTED_MODEL_CONFIG_VALUE }
+        : {}),
+      headers: redactConfiguredHeaders(provider.headers),
+      ...(Array.isArray(provider.models) ? { models } : {}),
+    }];
+  }));
+  return { ...config, providers };
+}
+
+function restoreConfiguredHeaders(
+  submitted: Record<string, string> | undefined,
+  existing: Record<string, string> | undefined,
+): Record<string, string> | undefined {
+  if (!submitted) return submitted;
+  return Object.fromEntries(Object.entries(submitted).map(([name, value]) => [
+    name,
+    value === REDACTED_MODEL_CONFIG_VALUE ? existing?.[name] : value,
+  ]).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
+}
+
+export function restoreRedactedModelsConfig(
+  submitted: ModelsFileConfig,
+  existing: ModelsFileConfig,
+): ModelsFileConfig {
+  if (!isRecord(submitted.providers)) return submitted;
+  const existingProviders = existing.providers ?? {};
+  const providers = Object.fromEntries(Object.entries(submitted.providers).map(([name, provider]) => {
+    const existingProvider = existingProviders[name] ?? {};
+    const existingModels = Array.isArray(existingProvider.models) ? existingProvider.models : [];
+    const models = Array.isArray(provider.models)
+      ? provider.models.map((model, index) => ({
+          ...model,
+          headers: restoreConfiguredHeaders(
+            model.headers,
+            existingModels.find((candidate) => candidate.id === model.id)?.headers ?? existingModels[index]?.headers,
+          ),
+        }))
+      : provider.models;
+    return [name, {
+      ...provider,
+      ...(provider.apiKey === REDACTED_MODEL_CONFIG_VALUE ? { apiKey: existingProvider.apiKey } : {}),
+      headers: restoreConfiguredHeaders(provider.headers, existingProvider.headers),
+      ...(Array.isArray(provider.models) ? { models } : {}),
+    }];
+  }));
+  return { ...submitted, providers };
+}
+
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -306,7 +373,7 @@ export function writeModelsConfig(config: ModelsFileConfig, options: WriteModels
   // which would disable every custom model until the user repairs it by hand.
   const temp = join(dir, `.${basename(current.path)}.omp-web-${process.pid}-${Date.now()}.tmp`);
   try {
-    writeFileSync(temp, text, "utf8");
+    writeFileSync(temp, text, { encoding: "utf8", mode: 0o600 });
     renameSync(temp, current.path);
   } catch (error) {
     rmSync(temp, { force: true });

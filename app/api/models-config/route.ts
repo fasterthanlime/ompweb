@@ -5,6 +5,8 @@ import { disposeUtilityRpc } from "@/lib/omp/rpc-utility";
 import {
   ModelsConfigParseError,
   readModelsConfigFile,
+  redactModelsConfig,
+  restoreRedactedModelsConfig,
   validateModelsConfig,
   writeModelsConfig,
   type ModelsFileConfig,
@@ -24,7 +26,7 @@ export async function GET() {
       code: "models_config_unparseable",
     });
   }
-  return NextResponse.json(file.config);
+  return NextResponse.json(redactModelsConfig(file.config));
 }
 
 // PUT /api/models-config[?overwrite=true]
@@ -32,7 +34,7 @@ export async function GET() {
 export async function PUT(req: Request) {
   try {
     const overwriteUnparseable = new URL(req.url).searchParams.get("overwrite") === "true";
-    const body = await req.json() as ModelsFileConfig;
+    const body = restoreRedactedModelsConfig(await req.json() as ModelsFileConfig, readModelsConfigFile().config);
     try {
       validateModelsConfig(body);
     } catch (error) {

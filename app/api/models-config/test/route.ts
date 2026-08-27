@@ -55,7 +55,7 @@ export async function POST(req: Request) {
     // config (no stored credentials, no models.db cache) and never touches
     // ~/.omp. Profile/XDG overrides are cleared so the redirect always wins.
     tempDir = mkdtempSync(join(tmpdir(), "omp-web-model-test-"));
-    writeFileSync(join(tempDir, "models.yml"), serializeModelsConfig(config), "utf8");
+    writeFileSync(join(tempDir, "models.yml"), serializeModelsConfig(config), { encoding: "utf8", mode: 0o600 });
 
     const startedAt = Date.now();
     const { models } = await runIsolatedUtilityCommand<{ models: OmpModel[] }>(

@@ -1,3 +1,5 @@
+export const REDACTED_MODEL_CONFIG_VALUE = "__OMPWEB_REDACTED__";
+
 export interface ModelConfigDraft {
   id?: unknown;
 }
@@ -8,6 +10,18 @@ export interface ProviderConfigDraft {
 
 export interface ModelsConfigDraft {
   providers?: Record<string, ProviderConfigDraft>;
+}
+
+export function modelConfigSecretInputValue(value: string | undefined): string {
+  return value === REDACTED_MODEL_CONFIG_VALUE ? "" : (value ?? "");
+}
+
+export function preserveModelConfigSecret(
+  nextValue: string,
+  previousValue: string | undefined,
+): string | undefined {
+  if (nextValue) return nextValue;
+  return previousValue === REDACTED_MODEL_CONFIG_VALUE ? REDACTED_MODEL_CONFIG_VALUE : undefined;
 }
 
 function isUntouchedModelDraft(model: ModelConfigDraft): boolean {
