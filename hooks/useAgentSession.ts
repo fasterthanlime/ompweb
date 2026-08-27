@@ -9,6 +9,7 @@ import type {
   ExtensionWidgetItem,
   SessionInfo,
   SessionTreeNode,
+  UserMessage,
 } from "@/lib/types";
 import { normalizeToolCalls } from "@/lib/normalize";
 import type { ThinkingModelMeta } from "@/lib/thinking-levels";
@@ -35,6 +36,7 @@ import {
   type SubagentProgress,
   type SubagentSnapshotLike,
 } from "@/lib/subagent-types";
+import { appendDeliveredUserMessage, deliveredUserMessageKey, reconcileTerminalMessages, userMessageKey } from "@/lib/transcript-reconciliation";
 
 // SubagentInfo lives in lib/subagent-types (shared with the server-side
 // history module); keep the export path stable for components.
@@ -475,36 +477,6 @@ function describeMcpMountNotice(message: CustomMessage): string {
   return extractMessageText(message).trim() || "The MCP tool inventory changed.";
 }
 
-function imageSignature(block: unknown): string {
-  if (!block || typeof block !== "object" || (block as { type?: unknown }).type !== "image") return "";
-  const source = (block as { source?: unknown }).source;
-  if (source && typeof source === "object") {
-    const src = source as { type?: unknown; media_type?: unknown; data?: unknown; url?: unknown };
-    return [
-      src.type === "url" ? "url" : "base64",
-      typeof src.media_type === "string" ? src.media_type : "",
-      typeof src.data === "string" ? src.data : "",
-      typeof src.url === "string" ? src.url : "",
-    ].join(":");
-  }
-  const flat = block as { data?: unknown; mimeType?: unknown };
-  return [
-    "base64",
-    typeof flat.mimeType === "string" ? flat.mimeType : "",
-    typeof flat.data === "string" ? flat.data : "",
-    "",
-  ].join(":");
-}
-
-function userMessageKey(message: Partial<AgentMessage>): string {
-  const content = (message as { content?: unknown }).content;
-  if (typeof content === "string") return JSON.stringify({ text: content, images: [] });
-  if (!Array.isArray(content)) return JSON.stringify({ text: "", images: [] });
-  return JSON.stringify({
-    text: extractMessageText(message),
-    images: content.map(imageSignature).filter(Boolean),
-  });
-}
 
 function readCompactResult(result: unknown, reason: string): CompactResultInfo | null {
   if (!result || typeof result !== "object") return null;
@@ -526,9 +498,9 @@ function readCompactResult(result: unknown, reason: string): CompactResultInfo |
 function buildOutgoingPrompt(
   message: string,
   images?: AttachedImage[],
-): { userMsg: AgentMessage; piImages: { type: "image"; data: string; mimeType: string }[] | undefined } {
+): { userMsg: UserMessage; piImages: { type: "image"; data: string; mimeType: string }[] | undefined } {
   const imageBlocks = images?.map((img) => ({ type: "image" as const, source: { type: "base64" as const, media_type: img.mimeType, data: img.data } }));
-  const userMsg: AgentMessage = {
+  const userMsg: UserMessage = {
     role: "user",
     content: imageBlocks?.length
       ? [...(message.trim() ? [{ type: "text" as const, text: message }] : []), ...imageBlocks]
@@ -708,6 +680,9 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   // invalidated on terminal.
   const subagentRosterGenerationRef = useRef(0);
   const optimisticUserMessageKeyRef = useRef<string | null>(null);
+  // User message_end may arrive after agent_end and before the terminal file
+  // reload resolves. Protect those exact deliveries from a stale snapshot.
+  const lateDeliveredUserKeysRef = useRef(new Set<string>());
   // True once this mount has persisted a non-empty queue: gates removal so a
   // just-mounted empty state cannot wipe a stored queue before restore runs.
   const queuePersistDirtyRef = useRef(false);
@@ -996,7 +971,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     }
   }, [applyAuthoritativeModel, beginAuthoritativeModelSync]);
 
-  const loadSession = useCallback(async (sid: string, showLoading = false, includeState = false, fenceRunId?: number) => {
+  const loadSession = useCallback(async (sid: string, showLoading = false, includeState = false, fenceRunId?: number, preserveOptimisticUser = false) => {
     let messagesLoaded = false;
     try {
       if (showLoading) setLoading(true);
@@ -1020,7 +995,10 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       if (fenceRunId !== undefined && promptRunIdRef.current !== fenceRunId) return null;
       setData(d);
       setActiveLeafId(d.leafId);
-      setMessages(d.context.messages);
+      setMessages((current) => preserveOptimisticUser
+        ? reconcileTerminalMessages(d.context.messages, current, optimisticUserMessageKeyRef.current, lateDeliveredUserKeysRef.current)
+        : d.context.messages);
+      if (preserveOptimisticUser) lateDeliveredUserKeysRef.current.clear();
       setEntryIds(d.context.entryIds ?? []);
       setShowPreCompactionHistory(false);
       setTodoPhases(d.context.todoPhases ?? []);
@@ -1649,7 +1627,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       // Pass the fence into loadSession: the pre-check above only guards the
       // start — a next prompt that begins while the reload is in flight must
       // not be overwritten by the finished run's snapshot.
-      if (sid) await loadSession(sid, false, true, runId);
+      if (sid) await loadSession(sid, false, true, runId, true);
     } finally {
       if (runId !== undefined && promptRunIdRef.current !== runId) return;
       optimisticUserMessageKeyRef.current = null;
@@ -1928,7 +1906,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         resetSubagentActivityState();
         dispatch({ type: "end" });
         if (endedSid) {
-          void loadSession(endedSid, false, false, endedRunId);
+          void loadSession(endedSid, false, false, endedRunId, true);
           const endToken = beginAuthoritativeModelSync();
           fetch(`/api/agent/${encodeURIComponent(endedSid)}`)
             .then((r) => (r.ok ? r.json() as Promise<{ state?: AgentStateResponse }> : null))
@@ -2057,31 +2035,23 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         break;
       }
       case "message_end": {
-        // Same late-event guard: after reconcile finished this run,
-        // loadSession already loaded this message from the session file —
-        // appending it again would duplicate it.
-        if (!agentRunningRef.current) break;
         const completed = event.message as AgentMessage | undefined;
+        // Assistant/custom terminal frames are already in the session snapshot
+        // after reconciliation. A queued user delivery may race behind
+        // agent_end, so it remains valid after the running flag clears.
+        if (!agentRunningRef.current && completed?.role !== "user") break;
         if (completed && completed.role === "user") {
           // Delivered steering/follow-up messages surface here as user
           // messages. The run's initial prompt also emits one, but handleSend
           // already appended it optimistically. Consume only the still-adjacent
           // optimistic bubble; later same-text queue deliveries must render.
-          const delivered = normalizeToolCalls(completed);
-          const deliveredKey = userMessageKey(delivered);
+          const delivered: UserMessage = completed;
           const optimisticKey = optimisticUserMessageKeyRef.current;
           optimisticUserMessageKeyRef.current = null;
           // Delivered steering/follow-up texts leave the client-tracked queue.
           consumeQueuedMessage(extractMessageText(delivered));
-          setMessages((prev) => {
-            const last = prev[prev.length - 1];
-            if (optimisticKey && last?.role === "user" && userMessageKey(last) === optimisticKey) {
-              return optimisticKey === deliveredKey
-                ? prev
-                : [...prev.slice(0, -1), delivered];
-            }
-            return [...prev, delivered];
-          });
+          if (!agentRunningRef.current) lateDeliveredUserKeysRef.current.add(deliveredUserMessageKey(delivered));
+          setMessages((prev) => appendDeliveredUserMessage(prev, delivered, optimisticKey));
         } else if (completed?.role === "custom" && (completed as CustomMessage).customType === "xdev-mount-notice") {
           toast.info("MCP tools updated", describeMcpMountNotice(completed as CustomMessage), { clamp: true });
         } else if (completed) {
