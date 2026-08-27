@@ -38,6 +38,11 @@ interface CompactionResultLike {
 const IDLE_DESTROY_MS = 10 * 60 * 1000;
 const READY_TIMEOUT_MS = 120_000;
 const MCP_LIST_TIMEOUT_MS = 15_000;
+const INTERRUPTED_TURN_RECOVERY_PROMPT = [
+  "The omp-web server restarted while your previous turn was active.",
+  "Continue the same task from the persisted session context.",
+  "Do not repeat completed side effects. If an operation may have completed before the restart, verify its current state before acting.",
+].join(" ");
 const ACTIVE_SESSIONS_PATH = process.env.OMP_WEB_ACTIVE_SESSIONS_PATH
   ?? `${homedir()}/.omp/agent/omp-web-active-sessions.json`;
 
@@ -46,6 +51,7 @@ interface PersistedActiveSession {
   sessionFile: string;
   cwd: string;
   advisor: boolean;
+  turnActive: boolean;
 }
 
 function activeSessionSnapshot(): PersistedActiveSession[] {
@@ -56,6 +62,7 @@ function activeSessionSnapshot(): PersistedActiveSession[] {
       sessionFile: session.sessionFile,
       cwd: session.cwd,
       advisor: session.advisorSpawned,
+      turnActive: session.hasActiveTurn(),
     }))
     .filter((session) => session.sessionId && session.sessionFile);
 }
@@ -91,12 +98,14 @@ function consumeActiveSessionSnapshot(): PersistedActiveSession[] {
         || typeof session.sessionFile !== "string"
         || typeof session.cwd !== "string"
         || typeof session.advisor !== "boolean"
+        || typeof session.turnActive !== "boolean"
       ) return [];
       return [{
         sessionId: session.sessionId,
         sessionFile: session.sessionFile,
         cwd: session.cwd,
         advisor: session.advisor,
+        turnActive: session.turnActive,
       }];
     });
   } catch (error) {
@@ -333,6 +342,10 @@ export class AgentSessionWrapper {
 
   isRunning(): boolean {
     return this.isAlive() && (this.promptRunning || this.streaming || this.compacting || this.bashRunning);
+  }
+
+  hasActiveTurn(): boolean {
+    return this.isAlive() && (this.promptRunning || this.streaming);
   }
 
   start(): void {
@@ -1274,7 +1287,7 @@ export async function restoreActiveRpcSessions(): Promise<number> {
       if (!existsSync(saved.sessionFile)) throw new Error(`session file missing: ${saved.sessionFile}`);
       const header = readSessionHeader(saved.sessionFile);
       const { cwd } = resolveSpawnCwdResult(header?.cwd ?? saved.cwd);
-      await startRpcSession(
+      const { session } = await startRpcSession(
         saved.sessionId,
         saved.sessionFile,
         cwd,
@@ -1282,6 +1295,9 @@ export async function restoreActiveRpcSessions(): Promise<number> {
         saved.advisor,
         header?.cwd,
       );
+      if (saved.turnActive) {
+        await session.send({ type: "prompt", message: INTERRUPTED_TURN_RECOVERY_PROMPT });
+      }
     }),
   );
   let count = 0;
