@@ -1,3 +1,5 @@
+import { restoreActiveRpcSessions } from "@/lib/rpc-manager";
+
 export async function register(): Promise<void> {
   if (process.env.NEXT_RUNTIME !== "nodejs") return;
 
@@ -16,6 +18,16 @@ export async function register(): Promise<void> {
     );
   } catch {
     // Diagnostics are best-effort.
+  }
+
+  // A service restart tears down the in-memory RPC registry. The previous
+  // process snapshots its live sessions during SIGTERM; recreate those omp
+  // children before serving so conversations continue without a browser turn.
+  try {
+    await restoreActiveRpcSessions();
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    console.warn(`[omp-web] active-session restore failed: ${detail}`);
   }
 
   // Warm the shared utility omp process so the first models/auth request does

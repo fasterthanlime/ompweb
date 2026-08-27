@@ -1,10 +1,10 @@
-import { existsSync } from "fs";
+import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { validateAgentImages } from "./image-attachments";
 import { invalidateModelsCache } from "./models-cache";
 import { RpcCommandError, RpcProcess, type RpcFrame } from "./omp/rpc-process";
 import { readNativeSettings } from "./omp/settings-config";
-import { cacheSessionPath, invalidateSessionListCache } from "./session-reader";
+import { cacheSessionPath, invalidateSessionListCache, readSessionHeader } from "./session-reader";
 import { PRESET_FULL } from "./tool-presets";
 import type {
   BashResultInfo,
@@ -38,6 +38,73 @@ interface CompactionResultLike {
 const IDLE_DESTROY_MS = 10 * 60 * 1000;
 const READY_TIMEOUT_MS = 120_000;
 const MCP_LIST_TIMEOUT_MS = 15_000;
+const ACTIVE_SESSIONS_PATH = process.env.OMP_WEB_ACTIVE_SESSIONS_PATH
+  ?? `${homedir()}/.omp/agent/omp-web-active-sessions.json`;
+
+interface PersistedActiveSession {
+  sessionId: string;
+  sessionFile: string;
+  cwd: string;
+  advisor: boolean;
+}
+
+function activeSessionSnapshot(): PersistedActiveSession[] {
+  return [...new Set(getRegistry().values())]
+    .filter((session) => session.isAlive())
+    .map((session) => ({
+      sessionId: session.sessionId,
+      sessionFile: session.sessionFile,
+      cwd: session.cwd,
+      advisor: session.advisorSpawned,
+    }))
+    .filter((session) => session.sessionId && session.sessionFile);
+}
+
+function persistActiveSessionsForRestart(): void {
+  const sessions = activeSessionSnapshot();
+  try {
+    if (sessions.length === 0) {
+      unlinkSync(ACTIVE_SESSIONS_PATH);
+      return;
+    }
+  } catch (error) {
+    if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+  }
+  const temporary = `${ACTIVE_SESSIONS_PATH}.${process.pid}.tmp`;
+  writeFileSync(temporary, `${JSON.stringify({ version: 1, sessions })}\n`, { mode: 0o600 });
+  renameSync(temporary, ACTIVE_SESSIONS_PATH);
+}
+
+function consumeActiveSessionSnapshot(): PersistedActiveSession[] {
+  try {
+    const value = JSON.parse(readFileSync(ACTIVE_SESSIONS_PATH, "utf8")) as {
+      version?: unknown;
+      sessions?: unknown;
+    };
+    unlinkSync(ACTIVE_SESSIONS_PATH);
+    if (value.version !== 1 || !Array.isArray(value.sessions)) return [];
+    return value.sessions.flatMap((candidate) => {
+      if (!candidate || typeof candidate !== "object") return [];
+      const session = candidate as Record<string, unknown>;
+      if (
+        typeof session.sessionId !== "string"
+        || typeof session.sessionFile !== "string"
+        || typeof session.cwd !== "string"
+        || typeof session.advisor !== "boolean"
+      ) return [];
+      return [{
+        sessionId: session.sessionId,
+        sessionFile: session.sessionFile,
+        cwd: session.cwd,
+        advisor: session.advisor,
+      }];
+    });
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") return [];
+    console.warn("[omp-web] failed to read active-session restart snapshot", error);
+    return [];
+  }
+}
 
 const RESTARTING_MESSAGE = "This session is restarting — retry in a moment.";
 const BASH_EXCLUDE_MESSAGE =
@@ -1155,7 +1222,18 @@ declare global {
 function getRegistry(): Map<string, AgentSessionWrapper> {
   if (!globalThis.__ompSessions) {
     globalThis.__ompSessions = new Map();
-    const cleanup = () => globalThis.__ompSessions?.forEach((s) => s.destroy());
+    let snapshotWritten = false;
+    const cleanup = () => {
+      if (!snapshotWritten) {
+        snapshotWritten = true;
+        try {
+          persistActiveSessionsForRestart();
+        } catch (error) {
+          console.error("[omp-web] failed to persist active sessions for restart", error);
+        }
+      }
+      globalThis.__ompSessions?.forEach((session) => session.destroy());
+    };
     process.once("exit", cleanup);
     process.once("SIGINT", cleanup);
     process.once("SIGTERM", cleanup);
@@ -1186,6 +1264,37 @@ export async function restartAllRpcSessions(): Promise<number> {
   const sessions = [...new Set(getRegistry().values())];
   await Promise.all(sessions.map((session) => session.destroyAndWait()));
   return sessions.length;
+}
+
+/** Resume every live RPC session captured during the previous server shutdown. */
+export async function restoreActiveRpcSessions(): Promise<number> {
+  const sessions = consumeActiveSessionSnapshot();
+  const restored = await Promise.allSettled(
+    sessions.map(async (saved) => {
+      if (!existsSync(saved.sessionFile)) throw new Error(`session file missing: ${saved.sessionFile}`);
+      const header = readSessionHeader(saved.sessionFile);
+      const { cwd } = resolveSpawnCwdResult(header?.cwd ?? saved.cwd);
+      await startRpcSession(
+        saved.sessionId,
+        saved.sessionFile,
+        cwd,
+        undefined,
+        saved.advisor,
+        header?.cwd,
+      );
+    }),
+  );
+  let count = 0;
+  for (let index = 0; index < restored.length; index++) {
+    const result = restored[index];
+    if (result?.status === "fulfilled") count++;
+    else console.warn(
+      `[omp-web] failed to restore active session ${sessions[index]?.sessionId ?? "unknown"}`,
+      result?.reason,
+    );
+  }
+  if (count > 0) console.log(`[omp-web] restored ${count} active session${count === 1 ? "" : "s"}`);
+  return count;
 }
 
 // ----------------------------------------------------------------------------
