@@ -652,6 +652,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   // reporting queuedMessageCount === 0 must not wipe a queue we just wrote.
   const queueMutatedAtRef = useRef(0);
   const agentRunningRef = useRef(false);
+  const managedSessionRunningRef = useRef(false);
   const bashRunningRef = useRef(false);
   const bashRecoveryIdRef = useRef(0);
   const handleAgentEventRef = useRef<((event: AgentEvent) => void) | null>(null);
@@ -1256,12 +1257,12 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
           // session switch cancels it — otherwise an orphaned stream respawns
           // (and can 404-loop) after the hook is torn down.
           settle("closed");
-          if (eventSourceRef.current === es && agentRunningRef.current) {
+          if (eventSourceRef.current === es && managedSessionRunningRef.current) {
             eventSourceRef.current = null;
             if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
             reconnectTimerRef.current = setTimeout(() => {
               reconnectTimerRef.current = null;
-              if (agentRunningRef.current && sessionIdRef.current === sid) {
+              if (managedSessionRunningRef.current && sessionIdRef.current === sid) {
                 void connectEvents(sid);
                 // The reconnect restores the event stream, but host tools, URI
                 // schemes, and the subagent roster were registered on the old
@@ -2981,19 +2982,22 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       sessionIdRef.current = session.id;
       loadSession(session.id, true, true).then((agentState) => {
         if (agentState?.running) {
+          managedSessionRunningRef.current = true;
+          // Keep the per-session stream attached for the lifetime of the
+          // managed wrapper, including while idle. External callers such as
+          // the Discord broker can start a later turn without a browser-side
+          // action, and that turn must still render live.
+          void connectEvents(session.id);
+          void registerHostTools(session.id);
+          void registerHostUriSchemes(session.id);
           if (agentState.state?.isStreaming || agentState.state?.isPromptRunning) {
             agentRunningRef.current = true;
             setAgentRunning(true);
-            setAgentPhase(agentState.state.isStreaming ? { kind: "waiting_model" } : { kind: "running_command" });
+            setAgentPhase(
+              agentState.state.isStreaming ? { kind: "waiting_model" } : { kind: "running_command" },
+            );
             dispatch({ type: "start" });
-            void connectEvents(session.id);
-            // Register the host-tool + URI bridges so the agent can call
-            // open_url/notify/open_file and resolve pi-web://clipboard.
-            void registerHostTools(session.id);
-            void registerHostUriSchemes(session.id);
             // Rehydrate the live roster (missed lifecycle/progress frames).
-            // Tracked + session-guarded: a session switch during the delay must
-            // not issue a stale get_subagents against the old session.
             if (rosterRefreshTimerRef.current) {
               clearTimeout(rosterRefreshTimerRef.current);
               rosterRefreshTimerRef.current = null;
@@ -3040,6 +3044,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       });
     }
     return () => {
+      managedSessionRunningRef.current = false;
       bashRecoveryIdRef.current += 1;
       eventCoalescerRef.current?.reset();
       eventSourceRef.current?.close();
