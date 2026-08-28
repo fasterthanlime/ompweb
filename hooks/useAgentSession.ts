@@ -24,7 +24,7 @@ import { expandWebSlashCommand } from "@/lib/web-slash-commands";
 import { createActiveGoal, parseActiveGoal, type ActiveGoal, type ActivePlan } from "@/lib/web-mode-state";
 import type { HostToolDefinition, HostUriSchemeDefinition, RpcAvailableSlashCommand, SessionStatsInfo, TodoPhase } from "@/lib/pi-types";
 import { isRecord } from "@/lib/type-guards";
-import { subscribeSessionsChanged } from "@/lib/session-change-bus";
+import { subscribeRunningSessionIds, subscribeSessionsChanged } from "@/lib/session-change-bus";
 import {
   parseSubagentActivityEvent,
   parseSubagentLifecycle,
@@ -1278,6 +1278,34 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       };
     });
   }, [eventCoalescer]);
+
+  // An external caller (the Discord broker, a script hitting the HTTP API)
+  // can start a turn on this session's live wrapper while the page shows it
+  // idle with no stream attached — at mount the wrapper was idle, so the
+  // managed flow never engaged, and the file watcher stays silent because a
+  // wrapper-backed session emits RPC events, not standalone file writes the
+  // debounced watcher would attribute here before the turn ends. The
+  // sidebar's running-events SSE is the signal that does arrive: attach the
+  // stream, enter the running state, and reload the transcript so the turn
+  // renders live from its first frames.
+  useEffect(() => {
+    return subscribeRunningSessionIds((runningIds) => {
+      const sid = sessionIdRef.current;
+      if (!sid || !runningIds.includes(sid)) return;
+      if (eventSourceRef.current || agentRunningRef.current) return;
+      managedSessionRunningRef.current = true;
+      void connectEvents(sid);
+      // Host tools, URI schemes, and the subagent roster are per-connection.
+      reconnectActionsRef.current?.(sid);
+      agentRunningRef.current = true;
+      setAgentRunning(true);
+      setAgentPhase({ kind: "waiting_model" });
+      dispatch({ type: "start" });
+      // The turn may already be mid-stream: catch the transcript up to the
+      // frames that were emitted before the stream attached.
+      void loadSession(sid);
+    });
+  }, [connectEvents, loadSession]);
 
   const respondToExtensionUi = useCallback(async (
     request: ExtensionUiDialogRequest,

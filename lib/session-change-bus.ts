@@ -1,14 +1,15 @@
 // The running-events stream is consumed by the sidebar, but the open
-// transcript lives in useAgentSession under a sibling component. This carries
-// "these session files changed on disk" from one to the other without
-// threading a callback through the tree.
+// transcript lives in useAgentSession under a sibling component. These buses
+// carry "these session files changed on disk" and "these sessions are
+// currently running" from one to the other without threading callbacks
+// through the tree.
 
 type Listener = (sessionIds: string[]) => void;
 
-const listeners = new Set<Listener>();
+const changeListeners = new Set<Listener>();
+const runningListeners = new Set<Listener>();
 
-export function publishSessionsChanged(sessionIds: string[]): void {
-  if (sessionIds.length === 0) return;
+function publish(listeners: Set<Listener>, sessionIds: string[]): void {
   for (const listener of [...listeners]) {
     try {
       listener(sessionIds);
@@ -18,9 +19,27 @@ export function publishSessionsChanged(sessionIds: string[]): void {
   }
 }
 
+export function publishSessionsChanged(sessionIds: string[]): void {
+  if (sessionIds.length === 0) return;
+  publish(changeListeners, sessionIds);
+}
+
 export function subscribeSessionsChanged(listener: Listener): () => void {
-  listeners.add(listener);
+  changeListeners.add(listener);
   return () => {
-    listeners.delete(listener);
+    changeListeners.delete(listener);
+  };
+}
+
+/** Latest running-session-id snapshot from the sidebar's SSE stream. Empty
+ * arrays are published too: "nothing is running" is meaningful state. */
+export function publishRunningSessionIds(sessionIds: string[]): void {
+  publish(runningListeners, sessionIds);
+}
+
+export function subscribeRunningSessionIds(listener: Listener): () => void {
+  runningListeners.add(listener);
+  return () => {
+    runningListeners.delete(listener);
   };
 }

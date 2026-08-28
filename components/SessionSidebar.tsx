@@ -14,7 +14,7 @@ import { clearLastOpenSession, setLastOpenSession, workspaceKeyOf } from "@/lib/
 import { groupSessionsByProject, projectActivityCounts, sortManagedProjects } from "@/lib/project-ordering";
 import { comparableProjectPath } from "@/lib/comparable-path";
 import { Archive, Check, ChevronDown, ChevronRight, FileUp, Folder, GitBranch, MoreHorizontal, Plus, RefreshCw, Search, Settings2, SlidersHorizontal, Trash2, Upload } from "lucide-react";
-import { publishSessionsChanged } from "@/lib/session-change-bus";
+import { publishRunningSessionIds, publishSessionsChanged } from "@/lib/session-change-bus";
 
 declare global {
   interface Window {
@@ -716,6 +716,7 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
         if (data.type === "running") {
           sseAuthoritativeRef.current = true;
           setRunningSessionIds(new Set(data.runningSessionIds ?? []));
+          publishRunningSessionIds(data.runningSessionIds ?? []);
           if (data.refreshSessionList) scheduleRefresh();
         } else if (data.type === "sessions-changed") {
           if (data.refreshSessionList) scheduleRefresh();

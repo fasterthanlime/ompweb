@@ -21,3 +21,16 @@ test("idle managed streams reconnect after fatal SSE closure", () => {
   assert.match(source, /eventSourceRef\.current === es && managedSessionRunningRef\.current/);
   assert.match(source, /managedSessionRunningRef\.current && sessionIdRef\.current === sid/);
 });
+
+test("externally started turns attach the stream and enter the running state", () => {
+  const externalBlock = source.slice(
+    source.indexOf("subscribeRunningSessionIds(("),
+    source.indexOf("}, [connectEvents, loadSession])"),
+  );
+  assert.match(externalBlock, /if \(eventSourceRef\.current \|\| agentRunningRef\.current\) return;/);
+  assert.match(externalBlock, /managedSessionRunningRef\.current = true/);
+  assert.match(externalBlock, /void connectEvents\(sid\)/);
+  assert.match(externalBlock, /reconnectActionsRef\.current\?\.\(sid\)/);
+  assert.match(externalBlock, /setAgentRunning\(true\)/);
+  assert.match(externalBlock, /void loadSession\(sid\)/);
+});
