@@ -17,6 +17,9 @@ Options:
   -p, --port <port>        Server port (default 30177, env PORT)
   -H, --hostname <host>    Bind hostname (default 127.0.0.1, env OMP_WEB_HOSTNAME)
       --password <pass>    Password for the web sign-in screen (env OMP_WEB_PASSWORD)
+      --auth-proxy         Allow a non-loopback bind without a password because
+                           a trusted reverse proxy authenticates requests
+                           (env OMP_WEB_AUTH_PROXY=1)
       --no-open            Do not open the browser automatically
   -h, --help               Show this help
       --version            Show version
@@ -29,7 +32,10 @@ Password:
   set OMP_WEB_PASSWORD=secret&& ompweb     # CMD
 
 Security: use HTTPS via a trusted reverse proxy or VPN when binding to a
-non-loopback hostname, so the password and session cookie stay private.`);
+non-loopback hostname, so the password and session cookie stay private.
+--auth-proxy disables ompweb's own authentication entirely: the bind address
+must be reachable ONLY by the authenticating proxy (firewalled internal
+interface), never by untrusted clients.`);
 }
 
 function parseLaunchOptions(args = process.argv.slice(2), env = process.env) {
@@ -41,6 +47,7 @@ function parseLaunchOptions(args = process.argv.slice(2), env = process.env) {
       password:  { type: "string" },
       help:      { type: "boolean", short: "h" },
       version:   { type: "boolean" },
+      "auth-proxy": { type: "boolean" },
       "no-open": { type: "boolean" },
     },
     strict: false,
@@ -48,6 +55,7 @@ function parseLaunchOptions(args = process.argv.slice(2), env = process.env) {
 
   // --password wins over env so Windows users without POSIX inline-env syntax have a first-class option.
   const password = cliArgs.password ?? env.OMP_WEB_PASSWORD;
+  const authProxy = Boolean(cliArgs["auth-proxy"]) || isEnabled(env.OMP_WEB_AUTH_PROXY);
   if (cliArgs.version) {
     try {
       // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -58,6 +66,7 @@ function parseLaunchOptions(args = process.argv.slice(2), env = process.env) {
       port: cliArgs.port ?? env.PORT ?? "30177",
       hostname: cliArgs.hostname ?? env.OMP_WEB_HOSTNAME ?? "127.0.0.1",
       password,
+      authProxy,
       openBrowser: !cliArgs["no-open"] && !isEnabled(env.OMP_WEB_NO_OPEN),
       version: true,
     };
@@ -71,6 +80,7 @@ function parseLaunchOptions(args = process.argv.slice(2), env = process.env) {
       port: cliArgs.port ?? env.PORT ?? "30177",
       hostname: cliArgs.hostname ?? env.OMP_WEB_HOSTNAME ?? "127.0.0.1",
       password,
+      authProxy,
       openBrowser: !cliArgs["no-open"] && !isEnabled(env.OMP_WEB_NO_OPEN),
       help: true,
     };
@@ -79,6 +89,7 @@ function parseLaunchOptions(args = process.argv.slice(2), env = process.env) {
     port: cliArgs.port ?? env.PORT ?? "30177",
     hostname: cliArgs.hostname ?? env.OMP_WEB_HOSTNAME ?? "127.0.0.1",
     password,
+    authProxy,
     openBrowser: !cliArgs["no-open"] && !isEnabled(env.OMP_WEB_NO_OPEN),
   };
 }

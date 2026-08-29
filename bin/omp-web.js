@@ -66,11 +66,18 @@ if (!fs.existsSync(nextDir)) {
 }
 
 if (!isLoopbackHost(hostname)) {
-  if (!passwordEnabled) {
-    console.error(`Refusing to listen on ${hostname} without OMP_WEB_PASSWORD (or --password). Set a strong password or bind to 127.0.0.1.`);
+  if (launchOptions.authProxy) {
+    if (passwordEnabled) {
+      console.warn("Note: --auth-proxy is set; ompweb's own password sign-in stays enabled and the proxy adds a second layer.");
+    } else {
+      console.warn(`Warning: --auth-proxy — ompweb on ${hostname} has NO authentication of its own. Ensure only the authenticating reverse proxy can reach this address.`);
+    }
+  } else if (!passwordEnabled) {
+    console.error(`Refusing to listen on ${hostname} without OMP_WEB_PASSWORD (or --password). Set a strong password, use --auth-proxy behind a trusted authenticating reverse proxy, or bind to 127.0.0.1.`);
     process.exit(1);
+  } else {
+    console.warn(`Warning: ompweb is listening on ${hostname} over HTTP. Use HTTPS or a trusted VPN to protect the password and session cookie in transit.`);
   }
-  console.warn(`Warning: ompweb is listening on ${hostname} over HTTP. Use HTTPS or a trusted VPN to protect the password and session cookie in transit.`);
 }
 
 const nextArgs = ["start", "-p", port];
