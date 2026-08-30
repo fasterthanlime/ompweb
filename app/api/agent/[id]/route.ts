@@ -4,6 +4,7 @@ import { apiErrorResponse, resolveSessionPathOr404 } from "@/lib/api-utils";
 import { startRpcSession, getRpcSession, resolveSpawnCwdResult, WebRpcError } from "@/lib/rpc-manager";
 import { RpcCommandError } from "@/lib/omp/rpc-process";
 import { parseJsonWithinLimit, RequestBodyTooLargeError } from "@/lib/bounded-form-data";
+import { getSessionAdvisorEnabled, setSessionAdvisorEnabled } from "@/lib/session-preferences";
 
 const MAX_AGENT_COMMAND_REQUEST_BYTES = 4 * 1024 * 1024;
 
@@ -38,10 +39,12 @@ export async function POST(
       return NextResponse.json({ error: "command type is required", code: "command_type_required" }, { status: 400 });
     }
 
-    // The per-chat advisor choice rides on the query string (never the RPC
-    // body, which is forwarded to omp verbatim) and only matters when this
-    // request spawns or replaces the session's omp process.
-    const advisor = new URL(req.url).searchParams.get("advisor") === "1";
+    // The explicit query updates the durable per-session choice; requests
+    // without it reuse the choice set by ompweb or external surfaces.
+    const advisorParam = new URL(req.url).searchParams.get("advisor");
+    if (advisorParam === "1" || advisorParam === "0")
+      setSessionAdvisorEnabled(id, advisorParam === "1");
+    const advisor = getSessionAdvisorEnabled(id);
 
     // Fast path: already-running session. --advisor is a spawn-time flag with
     // no runtime RPC, so a toggle that now differs from the live child's spawn

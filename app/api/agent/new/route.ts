@@ -7,6 +7,7 @@ import { invalidateSessionListCache } from "@/lib/session-reader";
 import { WebRpcError, startRpcSession } from "@/lib/rpc-manager";
 import { RpcCommandError } from "@/lib/omp/rpc-process";
 import { parseJsonWithinLimit, RequestBodyTooLargeError } from "@/lib/bounded-form-data";
+import { setSessionAdvisorEnabled } from "@/lib/session-preferences";
 
 const MAX_NEW_AGENT_REQUEST_BYTES = 4 * 1024 * 1024;
 
@@ -55,6 +56,7 @@ export async function POST(req: Request) {
     // requests in the same millisecond, merging two new sessions into one.
     const tempKey = `__new__${randomUUID()}`;
     const { session, realSessionId } = await startRpcSession(tempKey, "", cwd, toolNames, advisor === true);
+    setSessionAdvisorEnabled(realSessionId, advisor === true);
 
     // Keep the files-route allowed-roots cache (see app/api/files/[...path]/route.ts)
     // in sync so the new cwd is immediately readable via /api/files. Without this,
