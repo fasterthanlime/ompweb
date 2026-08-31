@@ -780,24 +780,23 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     }
     return null;
   }, [todoPhases]);
-  // Load the per-session advisor choice on session switch; brand-new chats
-  // start disabled until the user toggles the composer icon.
+  // Load the durable per-session advisor choice so web and Discord stay in sync.
   useEffect(() => {
     const sid = session?.id;
     if (!sid) {
       setAdvisorEnabled(false);
       return;
     }
-    let stored = false;
-    try {
-      stored = localStorage.getItem(`omp-advisor-enabled:${sid}`) === "true";
-    } catch {
-      stored = false;
-    }
-    setAdvisorEnabled(stored);
-    // The spawn registry must match before any command POST can lazily start
-    // the omp process; localStorage alone would leave resumed sessions dark.
-    setSessionAdvisorSpawn(sid, stored);
+    const controller = new AbortController();
+    fetch(`/api/agent/${encodeURIComponent(sid)}/advisor`, { signal: controller.signal })
+      .then((response) => (response.ok ? response.json() : { enabled: false }))
+      .then((data: { enabled?: boolean }) => {
+        const enabled = data.enabled === true;
+        setAdvisorEnabled(enabled);
+        setSessionAdvisorSpawn(sid, enabled);
+      })
+      .catch(() => {});
+    return () => controller.abort();
   }, [session?.id]);
 
   const handleAdvisorChange = useCallback((enabled: boolean) => {
@@ -805,11 +804,11 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     const sid = sessionIdRef.current;
     if (!sid) return;
     setSessionAdvisorSpawn(sid, enabled);
-    try {
-      localStorage.setItem(`omp-advisor-enabled:${sid}`, String(enabled));
-    } catch {
-      // In-memory state still applies for this page load.
-    }
+    void fetch(`/api/agent/${encodeURIComponent(sid)}/advisor`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ enabled }),
+    });
   }, []);
 
   // Merge a batch of roster entries, keeping live frames over history.
