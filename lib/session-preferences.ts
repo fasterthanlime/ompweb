@@ -17,15 +17,31 @@ function preferencesPath(): string {
 function readFile(): SessionPreferencesFile {
   const path = preferencesPath();
   if (!existsSync(path)) return { ...EMPTY, sessions: {} };
-  const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return { ...EMPTY, sessions: {} };
-  const sessions = "sessions" in parsed && parsed.sessions && typeof parsed.sessions === "object" && !Array.isArray(parsed.sessions)
-    ? Object.fromEntries(Object.entries(parsed.sessions).flatMap(([id, value]) =>
-        value && typeof value === "object" && !Array.isArray(value) && "advisorEnabled" in value && typeof value.advisorEnabled === "boolean"
-          ? [[id, { advisorEnabled: value.advisorEnabled }]]
-          : [],
-      ))
-    : {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(path, "utf8"));
+  } catch {
+    return { ...EMPTY, sessions: {} };
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+    return { ...EMPTY, sessions: {} };
+  const sessions =
+    "sessions" in parsed &&
+    parsed.sessions &&
+    typeof parsed.sessions === "object" &&
+    !Array.isArray(parsed.sessions)
+      ? Object.fromEntries(
+          Object.entries(parsed.sessions).flatMap(([id, value]) =>
+            value &&
+            typeof value === "object" &&
+            !Array.isArray(value) &&
+            "advisorEnabled" in value &&
+            typeof value.advisorEnabled === "boolean"
+              ? [[id, { advisorEnabled: value.advisorEnabled }]]
+              : [],
+          ),
+        )
+      : {};
   return { version: 1, sessions };
 }
 
@@ -48,5 +64,12 @@ export function getSessionAdvisorEnabled(sessionId: string): boolean {
 export function setSessionAdvisorEnabled(sessionId: string, enabled: boolean): void {
   const preferences = readFile();
   preferences.sessions[sessionId] = { advisorEnabled: enabled };
+  writeFile(preferences);
+}
+
+export function deleteSessionPreferences(sessionId: string): void {
+  const preferences = readFile();
+  if (!(sessionId in preferences.sessions)) return;
+  delete preferences.sessions[sessionId];
   writeFile(preferences);
 }
