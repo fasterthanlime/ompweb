@@ -24,6 +24,7 @@ import {
 import { apiErrorResponse, resolveSessionPathOr404 } from "@/lib/api-utils";
 import { sessionPathKey } from "@/lib/paths";
 import { getRpcSession } from "@/lib/rpc-manager";
+import { deleteSessionPreferences } from "@/lib/session-preferences";
 
 // BranchNavigator still traverses recursively, so keep the response tree shallow.
 const MAX_PROJECTED_TREE_DEPTH = 200;
@@ -394,6 +395,7 @@ export async function DELETE(
     // shutdown and would recreate the file if it were still running.
     await getRpcSession(id)?.destroyAndWait?.();
     deleteSessionFileWithArtifacts(filePath);
+    deleteSessionPreferences(deletedSessionId);
     invalidateSessionPathCache(id);
     invalidateSessionListCache();
     return NextResponse.json({
