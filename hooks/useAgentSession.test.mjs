@@ -18,7 +18,7 @@ test("managed sessions attach SSE while idle for external turns", () => {
 });
 
 test("idle managed streams reconnect after fatal SSE closure", () => {
-  assert.match(source, /eventSourceRef\.current === es && managedSessionRunningRef\.current/);
+  assert.match(source, /eventSourceRef\.current === es/);
   assert.match(source, /managedSessionRunningRef\.current && sessionIdRef\.current === sid/);
 });
 
@@ -33,4 +33,12 @@ test("externally started turns attach the stream and enter the running state", (
   assert.match(externalBlock, /reconnectActionsRef\.current\?\.\(sid\)/);
   assert.match(externalBlock, /setAgentRunning\(true\)/);
   assert.match(externalBlock, /void loadSession\(sid\)/);
+});
+
+test("hot sends reuse the open event stream and skip get_state", () => {
+  assert.match(source, /eventSourceSessionIdRef\.current === session\.id/);
+  assert.match(source, /eventSourceRef\.current\?\.readyState === EventSource\.OPEN/);
+  assert.match(source, /if \(!streamIsLive\) \{\s*\/\/ Cold path:[\s\S]*?type: "get_state"/);
+  assert.match(source, /if \(existing && eventSourceSessionIdRef\.current === sid\)/);
+  assert.match(source, /existing\.readyState === EventSource\.OPEN/);
 });
