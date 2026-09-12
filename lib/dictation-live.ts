@@ -113,7 +113,7 @@ export function getRealtimeDictationConfig(): RealtimeDictationConfig {
   const url = parseUpstreamUrl(process.env[REALTIME_URL_ENV], REALTIME_URL_ENV);
   if (!url) return { enabled: false, supportedDisplayModes: [], misconfigured: Boolean(process.env[REALTIME_URL_ENV]?.trim()) };
   const previewUrl = parseUpstreamUrl(process.env[PREVIEW_URL_ENV] ?? DEFAULT_PREVIEW_URL, PREVIEW_URL_ENV);
-  return { enabled: true, url, previewUrl, supportedDisplayModes: previewUrl ? ["immediate", "stable_words"] : ["immediate"], misconfigured: false };
+  return { enabled: true, url, previewUrl, supportedDisplayModes: previewUrl ? ["immediate", "stable_words", "clean_tail"] : ["immediate"], misconfigured: false };
 }
 
 // Browser-facing events + socket abstraction
@@ -188,7 +188,7 @@ class LiveDictationBridge {
     }
     let ws: WebSocket;
     try {
-      const url = this.displayMode === "stable_words" ? config.previewUrl : config.url;
+      const url = this.displayMode !== "immediate" ? config.previewUrl : config.url;
       if (!url) throw new Error("Display mode unavailable");
       ws = new WebSocket(url);
     } catch {
@@ -198,7 +198,7 @@ class LiveDictationBridge {
     this.upstream = ws;
     ws.binaryType = "arraybuffer";
     ws.addEventListener("open", () => {
-      ws.send(JSON.stringify({ type: "session.update", session: { type: "transcription", ...(this.displayMode === "stable_words" ? { display_mode: "stable_words" } : {}), audio: { input: { format: { type: "audio/pcm", rate: 24000 }, turn_detection: null } } } }));
+      ws.send(JSON.stringify({ type: "session.update", session: { type: "transcription", ...(this.displayMode !== "immediate" ? { display_mode: this.displayMode } : {}), audio: { input: { format: { type: "audio/pcm", rate: 24000 }, turn_detection: null } } } }));
     });
     ws.addEventListener("message", (ev) => {
       void this.handleUpstreamMessage(ev);
@@ -355,10 +355,10 @@ class LiveDictationBridge {
       switch (message.type) {
         case "session.created":
         case "session.updated":
-          if (this.displayMode === "stable_words") {
+          if (this.displayMode !== "immediate") {
             if (message.type !== "session.updated") return;
             const session = isRecord(message.session) ? message.session : message;
-            if (session.display_mode !== "stable_words") { this.endWithError("Stable-word mode was not accepted"); return; }
+            if (session.display_mode !== this.displayMode) { this.endWithError("Requested display mode was not accepted"); return; }
           }
           if (this.state !== "connecting") return;
           if (this.connectTimer) {

@@ -346,8 +346,9 @@ export function SettingsConfig({ activeTab, toolCallsDefaultCollapsed, onToolCal
   const workspaceReady = cwd !== null;
   const [celebrationsEnabled, setCelebrationsEnabled] = useCelebrationsPreference();
   const [dictationMode, setDictationMode] = useState<DictationDisplayMode>(readDictationDisplayMode);
+  const [cleanTailAvailable, setCleanTailAvailable] = useState(false);
   const [stableWordsAvailable, setStableWordsAvailable] = useState(false);
-  useEffect(() => { void fetch("/api/dictation/live").then(response => response.json()).then(config => setStableWordsAvailable(config.supportedDisplayModes?.includes("stable_words") === true)).catch(() => {}); }, []);
+  useEffect(() => { void fetch("/api/dictation/live").then(response => response.json()).then(config => { setStableWordsAvailable(config.supportedDisplayModes?.includes("stable_words") === true); setCleanTailAvailable(config.supportedDisplayModes?.includes("clean_tail") === true); }).catch(() => {}); }, []);
   const [searchQuery, setSearchQuery] = useState("");
   const [highlightId, setHighlightId] = useState<string | null>(null);
   const [soundEnabled, setSoundEnabled] = useState<boolean>(() => {
@@ -612,9 +613,9 @@ export function SettingsConfig({ activeTab, toolCallsDefaultCollapsed, onToolCal
                   <div style={{ display: "grid", gap: 6, padding: "10px 0" }}>
                     <label htmlFor="dictation-display-mode" style={{ fontSize: 13 }}>Dictation display</label>
                     <select id="dictation-display-mode" value={dictationMode} onChange={event => { const mode = event.target.value as DictationDisplayMode; setDictationMode(mode); try { localStorage.setItem(DICTATION_DISPLAY_KEY, mode); } catch {} }} style={{ padding: 8, fontSize: 16, background: "var(--bg)", color: "var(--text)", border: "1px solid var(--border)", borderRadius: "var(--radius-control)" }}>
-                      <option value="immediate">Immediate</option><option value="stable_words" disabled={!stableWordsAvailable}>Stable words</option>
+                      <option value="immediate">Immediate</option><option value="stable_words" disabled={!stableWordsAvailable}>Stable words</option><option value="clean_tail" disabled={!cleanTailAvailable}>Clean tail</option>
                     </select>
-                    <span style={{ fontSize: 12, color: "var(--text-muted)" }}>Applies to the next recording. Stable words withholds incomplete words and dims punctuation that may still change.</span>
+                    <span style={{ fontSize: 12, color: "var(--text-muted)" }}>Applies to the next recording. Stable words withholds incomplete words and dims revisable punctuation. Clean tail shows revisable words immediately, hiding only trailing punctuation and whitespace until completion.</span>
                   </div>
                 </div>
               </div>

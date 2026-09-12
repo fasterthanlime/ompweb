@@ -209,7 +209,7 @@ function sessionCookie(cookieHeader: string | undefined): string | undefined {
 function handleLiveSocketUpgrade(req: http.IncomingMessage, socket: Duplex, head: Buffer): void {
   const config = getRealtimeDictationConfig();
   const displayMode = new URL(req.url ?? "/", "http://localhost").searchParams.get("displayMode") ?? "immediate";
-  if (displayMode !== "immediate" && displayMode !== "stable_words") { rejectUpgrade(socket, 400, { error: "Invalid dictation display mode" }); return; }
+  if (displayMode !== "immediate" && displayMode !== "stable_words" && displayMode !== "clean_tail") { rejectUpgrade(socket, 400, { error: "Invalid dictation display mode" }); return; }
   if (!config.supportedDisplayModes.includes(displayMode)) { rejectUpgrade(socket, 409, { error: "Dictation display mode unavailable" }); return; }
   if (!config.enabled) {
     rejectUpgrade(socket, config.misconfigured ? 503 : 409, {
