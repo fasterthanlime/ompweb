@@ -1,12 +1,9 @@
 /**
  * Web-native slash commands (prompt-composing).
  *
- * omp's own `/goal`, `/plan`, `/vibe`, ... are TUI-only builtins (`handleTui`);
- * the RPC prompt path (which omp-web uses) forwards them as literal user text
- * instead of executing them. These client-side commands fill that gap: the
- * palette advertises them and the client built-in dispatcher expands them into
- * effective prompts sent through the normal prompt pipeline, so the agent
- * actually receives a clear instruction rather than a stray "/goal ..." line.
+ * Prompt-composing commands fill gaps in omp's text-mode command surface.
+ * /goal is listed here for discovery, but is dispatched to ompweb's server
+ * lifecycle before prompt expansion; it must never become an ordinary prompt.
  *
  * Pure definitions — no I/O. Prompt text is deliberately concise; the args are
  * user-supplied and embedded verbatim.
@@ -22,8 +19,6 @@ export interface WebSlashCommandDef {
   buildPrompt: (args: string) => string;
 }
 
-const GOAL_PROMPT = (args: string) =>
-  `Work toward this goal for the rest of the session:\n\n${args}\n\nTreat it as the objective to prioritize when deciding what to do next.`;
 
 const PLAN_PROMPT = (args: string) =>
   `Create a plan for this task before doing anything else:\n\n${args}\n\nThink it through step by step, list concrete steps, and state what you will verify when done.`;
@@ -60,8 +55,8 @@ export const WEB_SLASH_COMMANDS: readonly WebSlashCommandDef[] = [
     name: "goal",
     descriptionKey: "chatInput.cmdGoal",
     argumentHintKey: "chatInput.cmdGoalArg",
-    requiresArgs: true,
-    buildPrompt: GOAL_PROMPT,
+    requiresArgs: false,
+    buildPrompt: (args) => `/goal ${args}`.trim(),
   },
   {
     name: "plan",
@@ -142,6 +137,7 @@ export function expandWebSlashCommand(text: string): WebSlashCommandExpansion {
   if (!text.startsWith("/")) return { kind: "not-web" };
   const match = text.match(/^\/([^\s]+)(?:\s+([\s\S]*))?$/);
   if (!match) return { kind: "not-web" };
+  if (match[1] === "goal") return { kind: "not-web" };
   const def = getWebSlashCommand(match[1]);
   if (!def) return { kind: "not-web" };
   const args = (match[2] ?? "").trim();

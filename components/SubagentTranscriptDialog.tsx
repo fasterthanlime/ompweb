@@ -5,10 +5,12 @@ import { sendAgentCommand } from "@/lib/agent-client";
 import { useI18n } from "@/lib/i18n";
 import { formatCost, formatDuration, formatTokens } from "@/lib/subagent-format";
 import { MarkdownBody } from "./MarkdownBody";
+import { MessageView } from "./MessageView";
 import { Dialog, DialogContent, DialogTitle, DialogClose } from "./ui/primitives";
 import type { SubagentInfo } from "@/hooks/useAgentSession";
 import type { SubagentActivityEvent, SubagentSnapshotLike } from "@/lib/subagent-types";
 import type { AgentMessage, ToolResultMessage } from "@/lib/types";
+import { normalizeToolCalls } from "@/lib/normalize";
 
 interface SubagentMessagesPage {
   sessionFile: string;
@@ -19,49 +21,47 @@ interface SubagentMessagesPage {
   totalBytes?: number;
 }
 
-/** Compact, defensive row for one raw transcript message (content may be a
- * string, a block array, or absent — legacy pi / omp RPC shapes). */
-function SubagentTranscriptRow({ message }: { message: AgentMessage }) {
-  const label = message.role === "user" ? "U" : message.role === "assistant" ? "A" : "R";
-  const labelColor = message.role === "user" ? "var(--accent)" : message.role === "assistant" ? "var(--text-muted)" : "var(--text-dim)";
-  const rawContent = (message as ToolResultMessage).content;
-  const blocks: Array<{ type: string; text?: unknown }> = typeof rawContent === "string"
-    ? [{ type: "text", text: rawContent }]
-    : Array.isArray(rawContent)
-      ? rawContent as Array<{ type: string; text?: unknown }>
-      : [];
-  const text = blocks
-    .filter((block) => block.type === "text" && typeof block.text === "string")
-    .map((block) => block.text as string)
-    .join("\n")
-    .slice(0, 400);
-  const isError = (message as ToolResultMessage).isError === true;
+function normalizeTranscriptMessage(message: AgentMessage): AgentMessage {
+  const raw = message as AgentMessage & { content?: unknown };
+  if (message.role === "assistant") {
+    const content = typeof raw.content === "string"
+      ? [{ type: "text", text: raw.content }]
+      : Array.isArray(raw.content) ? raw.content : [];
+    return normalizeToolCalls({ ...message, content } as AgentMessage);
+  }
+  if (message.role === "toolResult" && typeof raw.content === "string") {
+    return { ...message, content: [{ type: "text", text: raw.content }] } as AgentMessage;
+  }
+  return normalizeToolCalls(message);
+}
+
+/**
+ * Render transcript entries through the same message surface as the main
+ * conversation. Historical transcripts contain older tool-call field names,
+ * so normalize those before pairing tool results by call id. Tool results
+ * are intentionally not rendered as standalone rows: MessageView places each
+ * result under its corresponding tool call.
+ */
+export function SubagentTranscriptMessages({ messages, sessionId }: { messages: AgentMessage[]; sessionId: string | null }) {
+  const toolResults = new Map<string, ToolResultMessage>();
+  const normalized = messages.map(normalizeTranscriptMessage);
+  for (const message of normalized) {
+    if (message.role === "toolResult" && message.toolCallId) {
+      toolResults.set(message.toolCallId, message);
+    }
+  }
   return (
-    <div style={{ display: "flex", gap: 8, minWidth: 0 }}>
-      <span style={{ flexShrink: 0, fontSize: 10, fontFamily: "var(--font-mono)", color: labelColor, paddingTop: 2 }}>{label}</span>
-      <div
-        style={{
-          fontSize: message.role === "toolResult" || message.role === "assistant" ? 11.5 : 12.5,
-          lineHeight: 1.55,
-          minWidth: 0,
-          whiteSpace: "pre-wrap",
-          wordBreak: "break-word",
-          color: message.role === "toolResult" ? "var(--text-muted)" : "var(--text)",
-          fontFamily: message.role === "toolResult" ? "var(--font-mono)" : "inherit",
-        }}
-      >
-        {message.role === "assistant" && typeof rawContent !== "string" && Array.isArray(rawContent)
-          ? rawContent.map((block, i) => (
-              <div key={i}>
-                {block && typeof block === "object" && (block as { type?: unknown }).type === "toolCall"
-                  ? `→ ${(block as { toolName?: unknown }).toolName ?? "tool"} ${JSON.stringify((block as { input?: unknown }).input ?? {})}`
-                  : block && typeof block === "object" && (block as { type?: unknown }).type === "text"
-                    ? ((block as { text?: unknown }).text as string) ?? ""
-                    : ""}
-              </div>
-            ))
-          : text || (message.role === "user" || message.role === "assistant" ? "" : isError ? "(error)" : "(no output)")}
-      </div>
+    <div style={{ display: "grid", gap: 10, minWidth: 0 }}>
+      {normalized.map((message, index) => (
+        <MessageView
+          key={`${message.role}-${index}`}
+          message={message}
+          toolResults={toolResults}
+          sessionId={sessionId ?? undefined}
+          showTimestamp={false}
+          toolCallsDefaultCollapsed
+        />
+      ))}
     </div>
   );
 }
@@ -118,22 +118,24 @@ function JsonValue({ value }: { value: unknown }) {
   return <span style={{ color: "var(--text-muted)", fontSize: 12 }}>{String(value)}</span>;
 }
 
-/** The subagent's assignment, rendered as markdown. Exported for SSR tests. */
+/** The subagent's assignment, rendered as a collapsed markdown disclosure. */
 export function TaskBlock({ task }: { task: string }) {
   const { t } = useI18n();
   if (!task) return null;
   return (
-    <section style={{ border: "1px solid var(--border)", borderRadius: "var(--radius-control)", background: "var(--bg-subtle)", padding: "10px 12px" }}>
-      <span style={BLOCK_LABEL_STYLE}>{t("subagentTranscript.taskLabel")}</span>
-      <div style={{ marginTop: 6 }}>
+    <details className="subagent-transcript-task">
+      <summary>
+        <span style={BLOCK_LABEL_STYLE}>{t("subagentTranscript.taskLabel")}</span>
+      </summary>
+      <div style={{ marginTop: 8 }}>
         <MarkdownBody className="markdown-subagent-text">{task}</MarkdownBody>
       </div>
-    </section>
+    </details>
   );
 }
 
 /** The subagent's final output (`<id>.md`). Exported for SSR tests. */
-export function CompletionBlock({ completion, truncated }: { completion: string | null; truncated: boolean }) {
+export function CompletionBlock({ completion, truncated, emptyLabel }: { completion: string | null; truncated: boolean; emptyLabel?: string }) {
   const { t } = useI18n();
   let parsed: Record<string, unknown> | null = null;
   if (completion) {
@@ -149,7 +151,7 @@ export function CompletionBlock({ completion, truncated }: { completion: string 
   const keys = parsed ? Object.keys(parsed) : [];
   const singleText = parsed && keys.length === 1 && typeof parsed[keys[0]] === "string" ? parsed[keys[0]] as string : null;
   return (
-    <section style={{ border: "1px solid var(--border)", borderRadius: "var(--radius-control)", background: "var(--bg-panel)", padding: "10px 12px" }}>
+    <section className="subagent-transcript-result">
       <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
         <span style={BLOCK_LABEL_STYLE}>{t("subagentTranscript.resultLabel")}</span>
         {truncated && <span style={{ fontSize: 10.5, color: "var(--text-dim)" }}>{t("subagentTranscript.completionTruncated")}</span>}
@@ -168,18 +170,19 @@ export function CompletionBlock({ completion, truncated }: { completion: string 
         </div>
       ) : (
         <div style={{ marginTop: 6, fontSize: 12, color: "var(--text-dim)", fontStyle: "italic" }}>
-          {t("subagentTranscript.noCompletion")}
+          {emptyLabel ?? t("subagentTranscript.noCompletion")}
         </div>
       )}
     </section>
   );
 }
 
-export function SubagentTranscriptDialog({ subagent, sessionId, transcriptVersion, events, onClose }: {
+export function SubagentTranscriptDialog({ subagent, sessionId, transcriptVersion, events, onClose, remote = false }: {
   subagent: SubagentInfo | null;
   sessionId: string | null;
   transcriptVersion: number;
   events?: SubagentActivityEvent[];
+  remote?: boolean;
   onClose: () => void;
 }) {
   const { t } = useI18n();
@@ -207,16 +210,22 @@ export function SubagentTranscriptDialog({ subagent, sessionId, transcriptVersio
 
   const fetchCompletion = useCallback(async (): Promise<{ completion: string | null; truncated: boolean }> => {
     if (!sessionId || !subagent?.id) throw new Error("No session");
+    if (remote) return { completion: null, truncated: false };
     const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/subagents/${encodeURIComponent(subagent.id)}?mode=completion`);
     if (res.status === 404) return { completion: null, truncated: false };
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return await res.json() as { completion: string | null; truncated: boolean };
-  }, [sessionId, subagent?.id]);
+  }, [sessionId, subagent?.id, remote]);
 
   // Full transcript page (RPC registry first, disk fallback) — mirrors the
   // get_subagent_messages response shape so both sources are interchangeable.
   const fetchTranscriptPage = useCallback(async (startByte: number, preferDisk: boolean): Promise<SubagentMessagesPage> => {
     if (!sessionId || !subagent?.id) throw new Error("No session");
+    if (remote) {
+      const response = await fetch(`/api/remote/${encodeURIComponent(sessionId)}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ type: "get_subagent_messages", subagentId: subagent.id, fromByte: startByte }) });
+      if (!response.ok) throw new Error("Remote subagent transcript unavailable");
+      return response.json();
+    }
     if (preferDisk) {
       const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/subagents/${encodeURIComponent(subagent.id)}?fromByte=${startByte}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -228,7 +237,7 @@ export function SubagentTranscriptDialog({ subagent, sessionId, transcriptVersio
       sessionFile: subagent.sessionFile,
       fromByte: startByte,
     });
-  }, [sessionId, subagent?.id, subagent?.sessionFile]);
+  }, [sessionId, subagent?.id, subagent?.sessionFile, remote]);
 
   const loadTranscriptPage = useCallback(async (startByte: number) => {
     if (!sessionId || !subagent?.id) return;
@@ -274,7 +283,9 @@ export function SubagentTranscriptDialog({ subagent, sessionId, transcriptVersio
       // Live snapshots enrich the header (resolved model etc.) but carry no
       // settled output — the on-disk `<id>.md` is the completion source.
       if (found.completion === null && live) {
-        const result = await sendAgentCommand<{ subagents?: SubagentSnapshotLike[] }>(sessionId, { type: "get_subagents" });
+        const result = remote
+          ? await fetch(`/api/remote/${encodeURIComponent(sessionId)}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ type: "get_subagents" }) }).then(async response => { if (!response.ok) throw new Error("Remote subagent roster unavailable"); return response.json() as Promise<{ subagents?: SubagentSnapshotLike[] }>; })
+          : await sendAgentCommand<{ subagents?: SubagentSnapshotLike[] }>(sessionId, { type: "get_subagents" });
         const snap = (result.subagents ?? []).find((s) => s.id === subagent?.id);
         if (seq !== requestSeqRef.current) return;
         if (snap) setDetail(snap);
@@ -288,7 +299,7 @@ export function SubagentTranscriptDialog({ subagent, sessionId, transcriptVersio
     } finally {
       if (seq === requestSeqRef.current) setLoading(false);
     }
-  }, [sessionId, subagent?.id, live, fetchCompletion]);
+  }, [sessionId, subagent?.id, live, fetchCompletion, remote]);
 
   // Load the completion whenever the dialog opens for a subagent.
   useEffect(() => {
@@ -347,6 +358,8 @@ export function SubagentTranscriptDialog({ subagent, sessionId, transcriptVersio
   const description = detail?.description ?? subagent?.description ?? "";
   const task = detail?.task ?? subagent?.task ?? subagent?.assignment ?? "";
   const progress = subagent?.progress;
+  const status = subagent?.status ?? "started";
+  const terminal = status !== "started" || fromDisk;
   const historyTokens = formatTokens(progress?.tokens);
   const historyMeta = subagent?.source === "history"
     ? [
@@ -359,90 +372,69 @@ export function SubagentTranscriptDialog({ subagent, sessionId, transcriptVersio
   const outcomeError = subagent?.source === "history"
     ? subagent?.result?.abortReason ?? subagent?.result?.error
     : undefined;
-  const recentEvents = live && !completion && events && events.length > 0 ? events.slice(-4) : null;
+  const recentEvents = live && events && events.length > 0 ? events.slice(-5) : null;
+  const completionUnavailable = terminal && completion === null && !loading;
+  const emptyCompletionLabel = completionUnavailable ? "Completion unavailable" : undefined;
 
   return (
     <Dialog open={open} onOpenChange={(next) => { if (!next) onClose(); }}>
       {subagent && (
         <DialogContent
           key={subagent.id}
+          className="subagent-transcript-dialog"
           ariaLabel={t("subagentTranscript.title")}
-          style={{ width: "min(94vw, 920px)", maxWidth: "min(94vw, 920px)" }}
+          style={{ width: "var(--subagent-transcript-width, min(94vw, 920px))", maxWidth: "var(--subagent-transcript-width, min(94vw, 920px))", height: "var(--subagent-transcript-height, min(88dvh, 760px))", maxHeight: "var(--subagent-transcript-max-height, 88dvh)", padding: 0, overflow: "hidden", display: "grid", gridTemplateRows: "auto minmax(0, 1fr)" }}
         >
-          <>
-            <div style={{ display: "flex", alignItems: "flex-start", gap: 10, marginBottom: 12 }}>
-              <div style={{ minWidth: 0, flex: 1 }}>
-                <DialogTitle style={{ marginBottom: 2, fontSize: 16, lineHeight: 1.3 }}>
-                  <span style={{ fontFamily: "var(--font-mono)", color: "var(--accent)", fontSize: 14 }}>{agent}</span>
-                </DialogTitle>
-                {description && (
-                  <div style={{ fontSize: 12.5, color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginBottom: 4 }}>
-                    {description}
-                  </div>
-                )}
-                <div style={{ fontSize: 11, color: "var(--text-dim)", fontFamily: "var(--font-mono)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                  {detail?.sessionFile ?? subagent.sessionFile ?? subagent.id}
-                </div>
-                {historyMeta && (
-                  <div style={{ fontSize: 10.5, color: "var(--text-dim)", fontFamily: "var(--font-mono)", marginTop: 2 }}>
-                    {historyMeta}
-                  </div>
-                )}
-                {outcomeError && (
-                  <div style={{ fontSize: 11, color: "var(--status-error)", marginTop: 2, wordBreak: "break-word" }}>
-                    {outcomeError}
-                  </div>
-                )}
+          <div className="subagent-transcript-header">
+            <div style={{ minWidth: 0, flex: 1 }}>
+              <DialogTitle style={{ marginBottom: 2, fontSize: 16, lineHeight: 1.3 }}>
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 8, maxWidth: "100%" }}>
+                  <span style={{ fontFamily: "var(--font-mono)", color: "var(--accent)", fontSize: 14, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{agent}</span>
+                  <span style={{ flexShrink: 0, fontFamily: "var(--font-mono)", fontSize: 10, fontWeight: 500, color: terminal ? "var(--text-muted)" : "var(--accent)", textTransform: "uppercase", letterSpacing: 0.35 }}>{fromDisk && status === "started" ? "Status unknown" : t(`chatWindow.subagentState.${status}`)}</span>
+                </span>
+              </DialogTitle>
+              {description && (
+                <div style={{ fontSize: 12.5, color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginBottom: 4 }}>{description}</div>
+              )}
+              <div style={{ fontSize: 11, color: "var(--text-dim)", fontFamily: "var(--font-mono)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {detail?.sessionFile ?? subagent.sessionFile ?? subagent.id}
               </div>
-              <DialogClose
-                style={{ flexShrink: 0, background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer", fontSize: 18, lineHeight: 1, padding: "2px 6px" }}
-                aria-label={t("subagentTranscript.close")}
-              >
-                ×
-              </DialogClose>
+              {historyMeta && <div style={{ fontSize: 10.5, color: "var(--text-dim)", fontFamily: "var(--font-mono)", marginTop: 2 }}>{historyMeta}</div>}
+              {outcomeError && <div style={{ fontSize: 11, color: "var(--status-error)", marginTop: 2, wordBreak: "break-word" }}>{outcomeError}</div>}
             </div>
+            <DialogClose
+              style={{ flexShrink: 0, background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer", fontSize: 18, lineHeight: 1, padding: "2px 6px" }}
+              aria-label={t("subagentTranscript.close")}
+            >
+              ×
+            </DialogClose>
+          </div>
 
-            {recentEvents && (
-              <div
-                aria-live="polite"
-                style={{
-                  display: "grid",
-                  gap: 2,
-                  marginBottom: 8,
-                  padding: "6px 10px",
-                  border: "1px solid var(--border)",
-                  borderRadius: "var(--radius-control)",
-                  background: "var(--bg-panel)",
-                }}
-              >
-                {recentEvents.map((event, i) => (
-                  <div
-                    key={i}
-                    style={{
-                      display: "flex",
-                      gap: 6,
-                      fontSize: 11,
-                      fontFamily: "var(--font-mono)",
-                      color: event.kind === "tool" ? "var(--accent)" : "var(--text-muted)",
-                      minWidth: 0,
-                    }}
-                  >
-                    <span style={{ color: "var(--text-dim)", flexShrink: 0 }}>
-                      {event.kind === "tool" ? "·" : event.kind === "notice" ? "!" : "»"}
-                    </span>
-                    <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{event.label}</span>
-                  </div>
-                ))}
-              </div>
-            )}
-
+          <div className="subagent-transcript-body">
             {error ? (
               <div style={{ fontSize: 12, color: "var(--status-error)", padding: "8px 2px" }}>{error}</div>
             ) : (
-              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: 12, minWidth: 0 }}>
+                {live && recentEvents && (
+                  <div
+                    aria-live="polite"
+                    style={{ display: "grid", gap: 3, padding: "8px 10px", border: "1px solid var(--border)", borderRadius: "var(--radius-control)", background: "var(--bg-panel)" }}
+                  >
+                    {recentEvents.map((event, i) => (
+                      <div key={`${event.ts}-${i}`} style={{ display: "flex", gap: 6, fontSize: 11, fontFamily: "var(--font-mono)", color: event.kind === "tool" ? "var(--accent)" : "var(--text-muted)", minWidth: 0 }}>
+                        <span style={{ color: "var(--text-dim)", flexShrink: 0 }} aria-hidden>{event.kind === "tool" ? "·" : event.kind === "notice" ? "!" : "»"}</span>
+                        <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{event.label}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {terminal && (completion || completionUnavailable) && (
+                  <CompletionBlock completion={completion} truncated={completionTruncated} emptyLabel={emptyCompletionLabel} />
+                )}
                 <TaskBlock task={task} />
-                <CompletionBlock completion={completion} truncated={completionTruncated} />
-                {loading && <div style={{ fontSize: 11, color: "var(--text-dim)" }}>{t("subagentTranscript.loading")}</div>}
+                {live && loading && <div style={{ fontSize: 11, color: "var(--text-dim)" }}>{t("subagentTranscript.loading")}</div>}
+
                 <button
                   type="button"
                   aria-expanded={transcriptOpen}
@@ -454,39 +446,18 @@ export function SubagentTranscriptDialog({ subagent, sessionId, transcriptVersio
                       void loadTranscriptPage(0);
                     }
                   }}
-                  style={{
-                    alignSelf: "flex-start",
-                    background: "none",
-                    border: "none",
-                    color: "var(--accent)",
-                    cursor: "pointer",
-                    fontSize: 12,
-                    fontFamily: "inherit",
-                    padding: 0,
-                  }}
+                  style={{ alignSelf: "flex-start", background: "none", border: "none", color: "var(--accent)", cursor: "pointer", fontSize: 12, fontFamily: "inherit", padding: 0 }}
                 >
                   {transcriptOpen ? t("subagentTranscript.hideTranscript") : t("subagentTranscript.showTranscript")}
                 </button>
                 {transcriptOpen && (
-                  <div
-                    id="subagent-transcript-panel"
-                    style={{
-                      display: "grid",
-                      gap: 8,
-                      padding: "10px 12px",
-                      border: "1px solid var(--border)",
-                      borderRadius: "var(--radius-card)",
-                      background: "var(--bg-panel)",
-                      maxHeight: "50dvh",
-                      overflowY: "auto",
-                    }}
-                  >
+                  <div id="subagent-transcript-panel" className="subagent-transcript-panel">
                     {transcriptError ? (
                       <div style={{ fontSize: 12, color: "var(--status-error)" }}>{transcriptError}</div>
                     ) : transcriptMessages.length === 0 && !transcriptLoading ? (
                       <div style={{ fontSize: 12, color: "var(--text-dim)", fontStyle: "italic" }}>{t("subagentTranscript.noMessages")}</div>
                     ) : (
-                      transcriptMessages.map((message, i) => <SubagentTranscriptRow key={i} message={message} />)
+                      <SubagentTranscriptMessages messages={transcriptMessages} sessionId={sessionId} />
                     )}
                     {transcriptLoading && <div style={{ fontSize: 11, color: "var(--text-dim)" }}>{t("subagentTranscript.loading")}</div>}
                     {!transcriptExhausted && !transcriptLoading && (
@@ -502,7 +473,7 @@ export function SubagentTranscriptDialog({ subagent, sessionId, transcriptVersio
                 )}
               </div>
             )}
-          </>
+          </div>
         </DialogContent>
       )}
     </Dialog>

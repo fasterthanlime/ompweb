@@ -1,10 +1,10 @@
-# ompweb
+# Nook
 
 [English](./README.md) | [简体中文](./README.zh-CN.md) | [日本語](./README.ja.md)
 
 Community: [Join the OMPWEB Discord](https://discord.gg/evqgGzRfM5)
 
-Local web UI for the [oh-my-pi (omp) coding agent](https://github.com/can1357/oh-my-pi). ompweb reads your local omp session files and gives you a browser workspace for session browsing, real-time chat, model configuration, skill management, and project file preview.
+A place to work alongside coding agents, built on [oh-my-pi (omp)](https://github.com/can1357/oh-my-pi). Nook reads your local omp session files and provides a browser workspace for conversations, live dictation, model configuration, and project files. The package and terminal command remain `ompweb`; existing settings and session data are unchanged.
 
 ![ompweb — live session demo](docs/demo.gif)
 
@@ -76,17 +76,27 @@ Set `OMP_WEB_PASSWORD` (or pass `--password`) to protect the interface and every
 - **Keep the sidebar tidy**: archive an inactive session without deleting its native transcript, or delete it explicitly when it is no longer needed.
 - **Work across branches**: switch Git worktrees from the sidebar so new sessions and the Explorer follow the checkout you choose.
 - **Chat beside the project**: browse files on the left and preview source, docs, images, audio, and PDFs on the right while the agent works.
+- **Dictate into the draft**: click the microphone, speak, then click Stop to transcribe with Google Gemini 3.5 Transcribe (smart mode) into the editable draft. The recording arrow instead transcribes and sends or queues the combined draft. Cancel discards only the audio; switching chats cancels pending dictation. Recording stops automatically after five minutes and is limited to 20 MiB. Requires microphone permission and HTTPS (or localhost).
+  Failed transcription keeps the recording available for retry or download in the current chat. Retry inserts text into the draft without sending. Download before refreshing, closing the page, or switching chats: recovery is in memory, not persisted.
+  Optional live local transcription: set server-only `OMP_WEB_DICTATION_REALTIME_URL` to a compatible realtime WebSocket service. Audio streams over a persistent same-origin WebSocket. Local provider failures fall back to Google using the full recording, with a visible provider indicator. Backgrounding stops capture and finalizes into the draft without sending; the next mic tap requests a fresh stream.
+- **A quiet composer**: model and reasoning stay visible as text, the context ring opens usage and compaction controls, and `+` holds attachments and advisor settings. Recording shows a live microphone meter and elapsed timer. On touch devices, Enter inserts a newline; tap the arrow to send. Desktop Enter sends, with Shift+Enter for a newline.
 - **Watch subagents and plans live**: composer-attached panels show the todo plan and running subagents with per-subagent telemetry; click a chip for the full subagent transcript.
 - **See session state clearly**: context usage, cost, tokens-per-second (reported by omp itself), compaction state and method (with before → after token counts on compaction cards), and system prompt details are visible from the top bar and transcript.
 - **Preview markdown faithfully**: YAML frontmatter renders in a summary card (title + key/value rows), math fences stay aligned inside lists, and CJK ranges like `5~7U` are no longer mangled (GFM now requires `~~` for strikethrough).
 - **Pick projects naturally on Windows**: a drive picker at the filesystem root and a case-folded, symlink-aware project identity keep the sidebar stable across drives and worktrees.
 - **Configure less from the terminal**: manage models, login/API keys, model tests, task agents, native OMP controls (advisor, approval, Bash policy, thinking, compaction, memory, auto-learn, retry/fallback), skills (search, install, update checks), plugins, and project MCP servers from the web UI.
 - **MCP management in Settings**: a dedicated MCP tab lists installed project servers with status (enabled / disabled / invalid), supports add/edit/rename/validate/remove, and surfaces configuration failures as corner toasts.
-- **Slash commands that travel**: `/goal`, `/plan`, `/review`, `/fix`, `/test`, `/explain`, `/simplify`, `/commit`, and `/advisor` expand into well-structured prompts; omp's own commands (skills, `/compact`, …) appear via `available_commands_update`.
+- **Autonomous goals**: `/goal <objective>` starts a server-owned goal that continues after ordinary final replies, even without an open browser tab. The agent calls `finish_goal` with evidence when completed, or a blocker summary when human input is required. `/goal` or `/goal status` shows state; `/goal pause` stops further continuation after the current turn, `/goal resume` restarts it, and `/goal clear` removes it. The existing Stop button pauses the goal and aborts the turn. Goals persist per session; process/server restarts leave them paused until explicitly resumed. There is no implicit token budget: work continues until completion, a blocker, an error, or your pause. Old browser-only goal indicators are not automatically activated—set the objective again.
+  You can also tell the agent “set yourself a goal to …”: its `set_goal` tool activates the same persistent loop during the current turn. Agents cannot replace an existing goal or override a pause; use `/goal clear` or `/goal resume` yourself.
+- **Slash commands that travel**: `/plan`, `/review`, `/fix`, `/test`, `/explain`, `/simplify`, `/commit`, and `/advisor` expand into well-structured prompts; omp's own commands (skills, `/compact`, …) appear via `available_commands_update`.
 - **Keep OMP current**: check the installed runtime version, update it, and restart active sessions from Settings when needed.
 - **Stay informed**: opt into browser notifications when an agent finishes, play a completion sound, and check installed skills for updates.
 - **Jump anywhere with ⌘K**: a command palette (⌘K / Ctrl+K) for switching sessions, starting new ones, and toggling the theme.
 - **Warm, paper-like design**: light and dark themes with serif display type and WCAG AA-verified contrast, built on a token-driven UI kit (Base UI primitives, cmdk, lucide icons).
+
+## Supervised deployment on the Nook host
+
+`npm run deploy` runs the isolated build, candidate checks, rollback arming, and production cutover under a separate systemd user service. It builds releases on `/fs0`, never into live `.next`. Check progress with `npm run deploy:status`; logs are available through the worker unit printed at startup. After confirming the browser reconnects, run `npm run deploy:confirm`. Use `npm run deploy:rollback` to restore the previous release. The independent rollback fires after ten minutes unless confirmed. Host paths/service/health URLs can be overridden with `--config <json-file>`.
 
 ## Configuration
 
@@ -99,6 +109,13 @@ Set `OMP_WEB_PASSWORD` (or pass `--password`) to protect the interface and every
 | `OMP_WEB_OMP_BIN` | Absolute path to the `omp` binary when it is not on `PATH` |
 | `PI_CODING_AGENT_DIR` | Point at another omp agent directory (default `~/.omp/agent`) |
 | `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` | Standard proxy variables for server-side requests |
+| `OMP_WEB_GEMINI_API_KEY_PATH` | Google dictation key file (default `~/.omp/agent/discord-gemini-api-key`, shared with the Discord integration; mode `0600`) |
+| `OMP_WEB_SSH_TARGETS` | JSON array of configured SSH targets: `id`, `name`, `destination`, absolute remote `cwd`, and optional `ompBin` |
+| `OMP_WEB_REMOTE_SESSIONS_PATH` | Remote session descriptor registry (default `~/.omp/agent/remote-sessions.json`) |
+
+Configure dictation with the Discord integration's `/discord transcribe login`, or place your Gemini API key in the file above with owner-only permissions. The browser sends recorded audio to ompweb; only the server reads the key and contacts Google. Transcription requests use `store: false`, and the server attempts to delete the uploaded Google audio file afterward. Cancelling an upload cannot retract audio already sent to Google.
+
+Configured SSH workspaces appear beside local workspaces in the sidebar, with hostname and platform badges; their conversations use the main chat pane and shared composer. Configure `OMP_WEB_SSH_TARGETS`, for example `[{"id":"malphite","name":"Mac","destination":"amos@malphite.vxn.rs","cwd":"/Users/amos","ompBin":"/Users/amos/.local/bin/omp","platform":"darwin"}]`. OpenSSH uses the server user's keys and verified known_hosts with strict host-key checking. Files stay remote; Explorer is hidden until a remote file bridge is available. Session descriptors survive restarts and reconnect with the remote session file; no prompt is automatically resumed. The old `/remote` page redirects home.
 
 ## Architecture
 

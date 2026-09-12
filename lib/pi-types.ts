@@ -1,3 +1,4 @@
+import type { ActiveGoal } from "./web-mode-state";
 // Local mirrors of the omp shapes used by omp-web. omp's SDK packages are
 // Bun-only, so these types are hand-maintained against
 // oh-my-pi/packages/coding-agent/src/modes/rpc/rpc-types.ts (protocol v1).
@@ -81,6 +82,7 @@ export interface RpcSessionState {
  * (AgentSessionWrapper adapts RpcSessionState and adds process-side flags).
  */
 export interface WebSessionState {
+  goal: ActiveGoal | null;
   sessionId: string;
   sessionFile: string;
   sessionName?: string;

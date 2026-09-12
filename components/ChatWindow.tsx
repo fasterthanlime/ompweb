@@ -1,18 +1,17 @@
 "use client";
 import { registerAbortHandler } from "@/hooks/useKeyboardShortcuts";
-import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { ChevronDown } from "lucide-react";
-import type { AgentMessage, AssistantContentBlock, AssistantMessage, BashExecutionMessage, CustomMessage, ExtensionUiRequest, SessionInfo, SessionTreeNode, ToolResultMessage } from "@/lib/types";
-import { translate, useI18n } from "@/lib/i18n";
-import { countToolCallBlocks, getDisplayableAssistantBlocks, splitFinalAssistantBlocks } from "@/lib/message-display";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import type { AgentMessage, AssistantMessage, BashExecutionMessage, CustomMessage, ExtensionUiRequest, SessionInfo, SessionTreeNode } from "@/lib/types";
+import { useI18n } from "@/lib/i18n";
 import { MessageView } from "./MessageView";
+import { CommittedTranscript, buildConversationMeta, getUserInputText } from "./CommittedTranscript";
 import { ChatInput, type ChatInputHandle } from "./ChatInput";
 import { ExtensionDialog } from "./ExtensionDialog";
 import { SubagentTranscriptDialog } from "./SubagentTranscriptDialog";
 import { ChatMinimap, useMessageRefs } from "./ChatMinimap";
 import { ComposerPanels } from "./ComposerPanels";
-import { CHAT_COLUMN_MAX_WIDTH } from "@/lib/chat-layout";
-import { useAgentSession, type AgentPhase, type NoticeItem, type SubagentInfo } from "@/hooks/useAgentSession";
+import { CHAT_COLUMN_MAX_WIDTH, CHAT_MINIMAP_WIDTH } from "@/lib/chat-layout";
+import { useAgentSession, type NoticeItem, type SubagentInfo } from "@/hooks/useAgentSession";
 import { useAudio } from "@/hooks/useAudio";
 import { useDragDrop } from "@/hooks/useDragDrop";
 import { useIsMobile } from "@/hooks/useIsMobile";
@@ -47,17 +46,6 @@ interface Props {
   onGenerationSpeedChange?: (speed: GenerationSpeedInfo | null) => void;
 }
 
-function phaseLabel(phase: AgentPhase): string {
-  if (phase?.kind === "running_tools") {
-    const names = phase.tools.map((tool) => tool.name);
-    if (names.length === 0) return translate("chatWindow.runningTool");
-    if (names.length <= 3) return translate("chatWindow.runningNamed", { names: names.join(", ") });
-    return translate("chatWindow.runningNamedMore", { names: names.slice(0, 2).join(", "), more: names.length - 2 });
-  }
-  if (phase?.kind === "waiting_model") return translate("chatWindow.waitingModel");
-  if (phase?.kind === "running_command") return translate("chatWindow.runningCommand");
-  return translate("chatWindow.thinking");
-}
 
 const CHAT_COLUMN_PADDING = 16;
 // Trigger the next history page while the sentinel is still this far below
@@ -67,76 +55,6 @@ const CHAT_COLUMN_PADDING = 16;
 // the banner and the load looked like a no-op.
 const LOAD_MORE_ROOT_MARGIN = "400px 0px 0px 0px";
 
-function hasFinalAssistantAnswer(message: AgentMessage): boolean {
-  if (message.role !== "assistant") return false;
-  return splitFinalAssistantBlocks(message as AssistantMessage).answerBlocks.some((block) => (
-    block.type === "image" || (block.type === "text" && block.text.trim().length > 0)
-  ));
-}
-
-function findFinalAssistantIndex(messages: AgentMessage[], userIdx: number, endIdx: number): number {
-  for (let candidateIdx = endIdx - 1; candidateIdx > userIdx; candidateIdx--) {
-    if (hasFinalAssistantAnswer(messages[candidateIdx])) return candidateIdx;
-  }
-  for (let candidateIdx = endIdx - 1; candidateIdx > userIdx; candidateIdx--) {
-    if (messages[candidateIdx]?.role === "assistant") return candidateIdx;
-  }
-  return -1;
-}
-
-function getUserInputText(message: AgentMessage): string | null {
-  if (message.role !== "user") return null;
-  if (typeof message.content === "string") {
-    const text = message.content.trim();
-    return text.length > 0 ? text : null;
-  }
-  const text = message.content
-    .filter((block) => block.type === "text")
-    .map((block) => block.text)
-    .join("\n")
-    .trim();
-  return text.length > 0 ? text : null;
-}
-
-function countToolCalls(messages: AgentMessage[], indices: number[]): number {
-  let count = 0;
-  for (const idx of indices) {
-    const msg = messages[idx];
-    if (msg?.role !== "assistant") continue;
-    count += countToolCallBlocks(getDisplayableAssistantBlocks(msg as AssistantMessage));
-  }
-  return count;
-}
-
-function hasDisplayableProcessMessage(message: AgentMessage): boolean {
-  if (message.role === "assistant") {
-    return getDisplayableAssistantBlocks(message as AssistantMessage).length > 0;
-  }
-  return message.role === "custom";
-}
-
-// A user message normally anchors a turn (user prompt → process → final
-// answer), and the process messages in between get folded into a collapsed
-// ProcessDetailsGroup. When compaction fires mid-turn, pi drops the original
-// user prompt and inserts a compaction summary (role "custom", customType
-// "compaction") in its place; the agent then keeps producing tool calls and a
-// final answer with no user message left to anchor them. Treat a compaction
-// summary as an anchor too, otherwise every post-compaction message renders
-// standalone and never collapses.
-function isGroupAnchor(message: AgentMessage): boolean {
-  if (message.role === "user") return true;
-  return message.role === "custom" && (message as CustomMessage).customType === "compaction";
-}
-
-function withAssistantBlocks(
-  message: AssistantMessage,
-  content: AssistantContentBlock[],
-  options: { omitUsage?: boolean } = {},
-): AssistantMessage {
-  const next = { ...message, content };
-  if (options.omitUsage) next.usage = undefined;
-  return next;
-}
 
 function OmpRuntimeVersion() {
   const { t } = useI18n();
@@ -146,7 +64,6 @@ function OmpRuntimeVersion() {
     fetch("/api/omp-version")
       .then((res) => (res.ok ? res.json() : null))
       .then((data: { version: string | null } | null) => {
-        // omp reports "omp/17.1.3"; show just the number next to the label.
         if (!cancelled && data?.version) setVersion(data.version.replace(/^omp\//, ""));
       })
       .catch(() => {});
@@ -160,259 +77,8 @@ function OmpRuntimeVersion() {
     </span>
   );
 }
-
-function ProcessDetailsGroup({ messageCount, toolCallCount, children }: { messageCount: number; toolCallCount: number; children: ReactNode }) {
-  const { t, tn } = useI18n();
-  const [expanded, setExpanded] = useState(false);
-  const parts = [t("chatWindow.processDetails"), tn("chatWindow.messageCount", messageCount)];
-  if (toolCallCount > 0) parts.push(tn("chatWindow.toolCallCount", toolCallCount));
-
-  return (
-    <div style={{ marginBottom: 4 }}>
-      <button
-        type="button"
-        aria-expanded={expanded}
-        onClick={() => setExpanded((v) => !v)}
-        className="process-details-toggle"
-        title={expanded ? t("chatWindow.collapseProcessDetails") : t("chatWindow.expandProcessDetails")}
-      >
-        <ChevronDown
-          size={12}
-          strokeWidth={1.8}
-          aria-hidden="true"
-          style={{
-            flexShrink: 0,
-            transform: expanded ? "rotate(180deg)" : "none",
-            transition: "transform var(--dur-fast) var(--ease-out-warm)",
-          }}
-        />
-        <span className="process-details-label">
-          {parts.join(" · ")}
-        </span>
-      </button>
-      {expanded && (
-        <div style={{ marginTop: 3 }}>
-          {children}
-        </div>
-      )}
-    </div>
-  );
-}
-
-interface CommittedTranscriptProps {
-  messages: AgentMessage[];
-  entryIds: string[];
-  conversationMeta: { toolResultsMap: Map<string, ToolResultMessage>; lastAnchorIdx: number; visibleRefIndexByMessage: Map<number, number> };
-  messageRefs: React.RefObject<(HTMLDivElement | null)[]>;
-  isStreaming: boolean;
-  sessionBusy: boolean;
-  isNew: boolean;
-  forkingEntryId: string | null;
-  handleFork: (entryId: string) => void;
-  handleNavigate: (entryId: string) => void;
-  handleEditContent: (content: string) => void;
-  modelNames: Record<string, string>;
-  messageCwd: string | undefined;
-  onOpenFile?: (filePath: string) => void;
-  sessionId: string | undefined;
-  toolCallsDefaultCollapsed: boolean;
-  visibleCount: number;
-  /** True while the viewport is near the bottom of the conversation. When
-   *  false (user is reading history), the render window anchors its top so
-   *  messages appended by a running agent cannot slide the viewed messages
-   *  out of the window. */
-  nearBottom: boolean;
-  sentinelRef: React.RefObject<HTMLButtonElement | null>;
-  handleLoadMoreClick: () => void;
-}
-
-/**
- * The committed (non-streaming) transcript. Extracted from ChatWindow and
- * memoized over the committed messages so token-streaming updates (which only
- * change `streamingMessage`, rendered separately) do not re-run the O(history)
- * grouping/splitting work at display-frame cadence.
- */
-const CommittedTranscript = memo(function CommittedTranscript({
-  messages, entryIds, conversationMeta, messageRefs, isStreaming, sessionBusy, isNew, forkingEntryId,
-  handleFork, handleNavigate, handleEditContent, modelNames, messageCwd, onOpenFile, sessionId,
-  toolCallsDefaultCollapsed, visibleCount, nearBottom, sentinelRef, handleLoadMoreClick,
-}: CommittedTranscriptProps) {
-  const { t } = useI18n();
-  const { toolResultsMap, lastAnchorIdx, visibleRefIndexByMessage } = conversationMeta;
-
-  const attachVisibleRef = (idx: number, refIndex: number) => (el: HTMLDivElement | null) => {
-    messageRefs.current[refIndex] = el;
-  };
-
-  const renderMessage = (idx: number, options: { attachRef?: boolean; keyPrefix?: string; messageOverride?: AgentMessage; showTimestamp?: boolean } = {}): ReactNode => {
-    const msg = options.messageOverride ?? messages[idx];
-    const prevAssistantEntryId =
-      msg.role === "user" && idx > 0 && messages[idx - 1].role === "assistant"
-        ? entryIds[idx - 1]
-        : undefined;
-    const isVisible = msg.role === "user" || msg.role === "assistant";
-    const currentRefIdx = visibleRefIndexByMessage.get(idx);
-    const keyPrefix = options.keyPrefix ?? "message";
-    let showTimestamp = false;
-    if (msg.role === "assistant") {
-      showTimestamp = true;
-      for (let j = idx + 1; j < messages.length; j++) {
-        const r = messages[j].role;
-        if (r === "user") break;
-        if (r === "assistant") { showTimestamp = false; break; }
-      }
-      // Hide on the currently-streaming tail (the streaming bubble owns the live timestamp)
-      if (showTimestamp && isStreaming && idx === messages.length - 1) {
-        showTimestamp = false;
-      }
-    }
-    if (options.showTimestamp !== undefined) showTimestamp = options.showTimestamp;
-    const view = (
-      <MessageView
-        key={`${keyPrefix}-view-${idx}`}
-        message={msg}
-        toolResults={toolResultsMap}
-        modelNames={modelNames}
-        cwd={messageCwd}
-        onOpenFile={onOpenFile}
-        entryId={entryIds[idx]}
-        onFork={sessionBusy || isNew || (idx === 0 && msg.role === "user") ? undefined : handleFork}
-        forking={forkingEntryId === entryIds[idx]}
-        onNavigate={sessionBusy ? undefined : handleNavigate}
-        prevAssistantEntryId={sessionBusy ? undefined : prevAssistantEntryId}
-        onEditContent={handleEditContent}
-        showTimestamp={showTimestamp}
-        prevTimestamp={idx > 0 ? (messages[idx - 1] as AgentMessage & { timestamp?: number }).timestamp : undefined}
-        sessionId={sessionId}
-        toolCallsDefaultCollapsed={toolCallsDefaultCollapsed}
-      />
-    );
-    if (!isVisible || options.attachRef === false || currentRefIdx === undefined) return view;
-    return (
-      <div key={`${keyPrefix}-${idx}`} ref={attachVisibleRef(idx, currentRefIdx)}>
-        {view}
-      </div>
-    );
-  };
-
-  const rendered: ReactNode[] = [];
-  for (let idx = 0; idx < messages.length;) {
-    const msg = messages[idx];
-    if (!isGroupAnchor(msg)) {
-      rendered.push(renderMessage(idx));
-      idx += 1;
-      continue;
-    }
-
-    const userIdx = idx;
-    let endIdx = userIdx + 1;
-    while (endIdx < messages.length && !isGroupAnchor(messages[endIdx])) endIdx += 1;
-
-    const finalAssistantIdx = findFinalAssistantIndex(messages, userIdx, endIdx);
-
-    if (finalAssistantIdx === -1) {
-      for (let renderIdx = userIdx; renderIdx < endIdx; renderIdx++) {
-        rendered.push(renderMessage(renderIdx));
-      }
-      idx = endIdx;
-      continue;
-    }
-
-    const isLiveTail = (sessionBusy || isStreaming) && endIdx === messages.length && userIdx === lastAnchorIdx;
-    if (isLiveTail) {
-      for (let renderIdx = userIdx; renderIdx < endIdx; renderIdx++) {
-        rendered.push(renderMessage(renderIdx));
-      }
-      idx = endIdx;
-      continue;
-    }
-
-    rendered.push(renderMessage(userIdx));
-
-    const processIndices: number[] = [];
-    for (let processIdx = userIdx + 1; processIdx < finalAssistantIdx; processIdx++) {
-      processIndices.push(processIdx);
-    }
-    const visibleProcessIndices = processIndices.filter((processIdx) => hasDisplayableProcessMessage(messages[processIdx]));
-    const finalAssistant = messages[finalAssistantIdx] as AssistantMessage;
-    const finalSplit = splitFinalAssistantBlocks(finalAssistant);
-    const finalProcessMessage = finalSplit.processBlocks.length > 0
-      ? withAssistantBlocks(finalAssistant, finalSplit.processBlocks, { omitUsage: true })
-      : null;
-    const finalAnswerMessage = finalSplit.answerBlocks.length > 0
-      ? withAssistantBlocks(finalAssistant, finalSplit.answerBlocks)
-      : null;
-
-    const processCount = visibleProcessIndices.length + (finalProcessMessage ? 1 : 0);
-    if (processCount > 0) {
-      const processRefIdx = visibleProcessIndices
-        .map((processIdx) => visibleRefIndexByMessage.get(processIdx))
-        .find((value): value is number => typeof value === "number")
-        ?? (finalAnswerMessage ? undefined : visibleRefIndexByMessage.get(finalAssistantIdx));
-      const processGroup = (
-        <ProcessDetailsGroup
-          messageCount={processCount}
-          toolCallCount={countToolCalls(messages, visibleProcessIndices) + countToolCallBlocks(finalSplit.processBlocks)}
-        >
-          {visibleProcessIndices.map((processIdx) => renderMessage(processIdx, { attachRef: false, keyPrefix: "process" }))}
-          {finalProcessMessage && renderMessage(finalAssistantIdx, { attachRef: false, keyPrefix: "process-final", messageOverride: finalProcessMessage, showTimestamp: false })}
-        </ProcessDetailsGroup>
-      );
-      rendered.push(
-        <div
-          key={`process-group-${userIdx}-${finalAssistantIdx}`}
-          ref={processRefIdx === undefined ? undefined : (el) => { messageRefs.current[processRefIdx] = el; }}
-        >
-          {processGroup}
-        </div>,
-      );
-    }
-
-    if (finalAnswerMessage) {
-      rendered.push(renderMessage(finalAssistantIdx, { messageOverride: finalAnswerMessage }));
-    }
-    for (let renderIdx = finalAssistantIdx + 1; renderIdx < endIdx; renderIdx++) {
-      rendered.push(renderMessage(renderIdx));
-    }
-    idx = endIdx;
-  }
-  // Anchor the render window while the user is reading history: the plain
-  // end-anchored window (total - visibleCount) slides forward as a running
-  // agent appends messages, silently pushing the viewed messages out of the
-  // window with no scroll correction. While not near the bottom, keep the
-  // window's top at the last end-anchored position and let the appended tail
-  // grow into the window; returning to the bottom re-engages the end anchor.
-  const anchorStartIndexRef = useRef<number | null>(null);
-  const { startIndex, hasMore } = useMemo(() => {
-    const total = rendered.length;
-    const endAnchored = Math.max(0, total - visibleCount);
-    if (nearBottom || anchorStartIndexRef.current === null) {
-      anchorStartIndexRef.current = endAnchored;
-      return { startIndex: endAnchored, hasMore: endAnchored > 0 };
-    }
-    const anchored = Math.min(anchorStartIndexRef.current, endAnchored);
-    anchorStartIndexRef.current = anchored;
-    return { startIndex: anchored, hasMore: anchored > 0 };
-  }, [rendered.length, visibleCount, nearBottom]);
-  return (
-    <>
-      {hasMore && (
-        <button
-          ref={sentinelRef}
-          type="button"
-          onClick={handleLoadMoreClick}
-          className="py-3 w-full text-center text-xs text-text-muted hover:text-text transition-colors cursor-pointer"
-        >
-          {t("chatWindow.scrollUpToLoad", { count: startIndex })}
-        </button>
-      )}
-      {rendered.slice(startIndex)}
-    </>
-  );
-});
-
 export function ChatWindow({ session, newSessionCwd, toolCallsDefaultCollapsed = true, onAgentEnd, onSessionCreated, onSessionForked, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSystemPromptLoaderChange, onSessionStatsChange, onSessionStatsPanelOpen, onContextUsageChange, onModelCapacityChange, onGenerationSpeedChange, onOpenFile }: Props) {
-  const { t, tn } = useI18n();
+  const { t } = useI18n();
   const { playDoneSound, unlockAudio } = useAudio();
   const isMobile = useIsMobile();
 
@@ -434,7 +100,7 @@ export function ChatWindow({ session, newSessionCwd, toolCallsDefaultCollapsed =
   }, [chatInputRef]);
 
   const {
-    loading, error, messages, entryIds, showPreCompactionHistory, streamState,
+    loading, error, messages, entryIds, historyPagination, historyLoading, loadOlderHistory, showPreCompactionHistory, streamState,
     agentRunning, bashRunning, pendingBash, modelNames, modelList, modelsLoading, modelError, modelThinkingLevels, modelThinkingLevelMaps, thinkingLevel, fastModeEnabled, fastModeActive,
     liveModelMeta,
     retryInfo, contextUsage, forkingEntryId,
@@ -442,15 +108,16 @@ export function ChatWindow({ session, newSessionCwd, toolCallsDefaultCollapsed =
     slashCommands, slashCommandsLoading, queuedMessages, advisorActive, advisorEnabled, handleAdvisorChange,
     notices, extensionDialog, extensionCustomUi, extensionStatuses, extensionWidgets, respondToExtensionUi, sendExtensionCustomInput,
     isAutoModelSelection,
-    agentPhase, activeGoal, activePlan,
-    subagents, subagentEvents, subagentTranscriptVersions, activeSubagentCount, currentTodoPhase, todoPhases,
+    activeGoal, activePlan, agentPhase,
+    subagents, subagentEvents, subagentTranscriptVersions, todoPhases,
     isNew,
     sessionIdRef, messagesEndRef, scrollContainerRef,
     handleSend, handleAbort, handleFork, handleNavigate, handleModelChange,
-    handleSteer, handleFollowUp, handlePromptWithStreamingBehavior, handleAbortCompaction, handleCompact,
+    handleAbortCompaction, handleCompact,
     removeQueuedMessage, promoteQueuedToSteer,
     handleBuiltinSlashCommand, togglePreCompactionHistory,
     handleThinkingLevelChange, handleFastModeChange, handleCycleModel, handleCycleThinkingLevel, handleAbortRetry, loadSlashCommands,
+    handleInterruptAndReply,
   } = useAgentSession({
     session, newSessionCwd, onAgentEnd: wrappedOnAgentEnd, onSessionCreated, onSessionForked,
     modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSystemPromptLoaderChange, onSessionStatsPanelOpen,
@@ -621,10 +288,16 @@ export function ChatWindow({ session, newSessionCwd, toolCallsDefaultCollapsed =
         // (the capture happens before the scroll, and the restore pins the
         // viewport to the top of the last page until every page is loaded).
         if (entries[0]?.isIntersecting && container.scrollTop > 0) {
-          // Save distance from top before prepending to restore scroll later
+          // Save distance from top before prepending to restore scroll later.
           prevScrollDistanceRef.current = captureScrollDistance(container.scrollHeight, container.scrollTop);
           loadMoreModeRef.current = "auto";
-          setVisibleCount((prev) => getNextVisibleCount(prev));
+          if (messages.length <= visibleCount && historyPagination.hasMore) {
+            void loadOlderHistory().then((loaded) => {
+              if (loaded > 0) setVisibleCount((prev) => prev + loaded);
+            });
+          } else {
+            setVisibleCount((prev) => getNextVisibleCount(prev));
+          }
         }
       },
       // Expand the root upward so the page loads while the banner is still
@@ -634,7 +307,7 @@ export function ChatWindow({ session, newSessionCwd, toolCallsDefaultCollapsed =
     );
     observer.observe(sentinel);
     return () => observer.disconnect();
-  }, [visibleCount, messages.length, scrollContainerRef]);
+  }, [historyPagination.hasMore, loadOlderHistory, messages.length, scrollContainerRef, visibleCount]);
 
   // After visibleCount increases (more messages prepended), restore the
   // scroll position so the viewport doesn't jump.
@@ -667,12 +340,18 @@ export function ChatWindow({ session, newSessionCwd, toolCallsDefaultCollapsed =
   const handleLoadMoreClick = useCallback(() => {
     const container = scrollContainerRef.current;
     if (container) {
-      // Sentinel value so the restore effect above runs and reveals the loaded messages.
+      // Capture before either revealing local history or prepending a remote page.
       prevScrollDistanceRef.current = captureScrollDistance(container.scrollHeight, container.scrollTop);
     }
     loadMoreModeRef.current = "click";
+    if (messages.length <= visibleCount && historyPagination.hasMore) {
+      void loadOlderHistory().then((loaded) => {
+        if (loaded > 0) setVisibleCount((prev) => prev + loaded);
+      });
+      return;
+    }
     setVisibleCount((prev) => getNextVisibleCount(prev));
-  }, [scrollContainerRef]);
+  }, [historyPagination.hasMore, loadOlderHistory, messages.length, visibleCount, scrollContainerRef]);
 
   const generationSpeedKey = generationSpeed
     ? `${generationSpeed.current ?? "null"}|${generationSpeed.average ?? "null"}`
@@ -723,9 +402,8 @@ export function ChatWindow({ session, newSessionCwd, toolCallsDefaultCollapsed =
   useEffect(() => () => { onContextUsageChange?.(null); }, [onContextUsageChange]);
 
   const onDrop = useCallback((files: File[]) => {
-    if (sessionBusy) return;
     chatInputRef?.current?.addFiles(files);
-  }, [sessionBusy, chatInputRef]);
+  }, [chatInputRef]);
 
   const { isDragOver, handleDragEnter, handleDragOver, handleDragLeave, handleDrop } = useDragDrop(onDrop);
 
@@ -741,20 +419,7 @@ export function ChatWindow({ session, newSessionCwd, toolCallsDefaultCollapsed =
     }
     return history.reverse();
   }, [messages]);
-  const conversationMeta = useMemo(() => {
-    const toolResultsMap = new Map<string, ToolResultMessage>();
-    let lastAnchorIdx = -1;
-    const visibleRefIndexByMessage = new Map<number, number>();
-    let refIdx = 0;
-
-    messages.forEach((message, index) => {
-      if (message.role === "toolResult") toolResultsMap.set((message as ToolResultMessage).toolCallId, message as ToolResultMessage);
-      if (isGroupAnchor(message)) lastAnchorIdx = index;
-      if (message.role === "user" || message.role === "assistant") visibleRefIndexByMessage.set(index, refIdx++);
-    });
-
-    return { toolResultsMap, lastAnchorIdx, visibleRefIndexByMessage };
-  }, [messages]);
+  const conversationMeta = useMemo(() => buildConversationMeta(messages), [messages]);
   // The ref array is sized by the count of user/assistant messages — exactly
   // what conversationMeta's visibleRefIndexByMessage already tallies, so no
   // separate filter pass (which would re-run on every streaming frame).
@@ -833,9 +498,7 @@ export function ChatWindow({ session, newSessionCwd, toolCallsDefaultCollapsed =
       ref={chatInputRef}
       onSend={handleSend}
       onAbort={handleAbort}
-      onSteer={agentRunning ? handleSteer : undefined}
-      onFollowUp={agentRunning ? handleFollowUp : undefined}
-      onPromptWithStreamingBehavior={agentRunning ? handlePromptWithStreamingBehavior : undefined}
+      onInterruptAndReply={handleInterruptAndReply}
       isStreaming={sessionBusy}
       model={displayModelValue}
       isAutoModelSelection={isAutoModelSelection}
@@ -867,6 +530,7 @@ export function ChatWindow({ session, newSessionCwd, toolCallsDefaultCollapsed =
       inputHistory={inputHistory}
       advisorActive={advisorActive}
       onCompact={handleCompact}
+      contextUsage={contextUsage}
       onRemoveQueuedMessage={removeQueuedMessage}
       onPromoteQueuedToSteer={promoteQueuedToSteer}
       slashCommands={slashCommands}
@@ -890,7 +554,7 @@ export function ChatWindow({ session, newSessionCwd, toolCallsDefaultCollapsed =
     );
   }
 
-  if (error) {
+  if (error && messages.length === 0) {
     return (
       <div role="alert" className="flex h-full items-center justify-center" style={{ color: "var(--accent-strong)", padding: "0 16px", textAlign: "center", fontSize: 13 }}>
         {error}
@@ -906,7 +570,7 @@ export function ChatWindow({ session, newSessionCwd, toolCallsDefaultCollapsed =
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
-      {isDragOver && !sessionBusy && (
+      {isDragOver && (
         <div className="drop-zone-overlay pointer-events-none absolute inset-0 z-50 flex items-center justify-center backdrop-blur-[1px]">
           <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
             {[0, 0.8, 1.6].map((delay) => (
@@ -956,7 +620,7 @@ export function ChatWindow({ session, newSessionCwd, toolCallsDefaultCollapsed =
       {isEmptyNew ? (
         <div className="relative flex flex-1 flex-col overflow-hidden">
           <div className="flex flex-1 flex-col items-center justify-center overflow-y-auto px-4 py-8" style={{ minHeight: 0 }}>
-          <div className="w-full" style={{ maxWidth: CHAT_COLUMN_MAX_WIDTH }}>
+          <div className="w-full" style={{ maxWidth: CHAT_COLUMN_MAX_WIDTH, "--composer-gutter": "0px" } as React.CSSProperties}>
             <div
                className="mb-3 empty-chat-brand"
               style={{
@@ -970,8 +634,8 @@ export function ChatWindow({ session, newSessionCwd, toolCallsDefaultCollapsed =
               }}
             >
               <div style={{ display: "flex", alignItems: "baseline", gap: 10, minWidth: 0, flex: 1, lineHeight: 1.4, overflow: "hidden" }}>
-                <span style={{ fontSize: 18, fontWeight: 600, letterSpacing: "0.04em", color: "var(--accent)", flexShrink: 0, whiteSpace: "nowrap" }}>⌥</span>
-                <span style={{ fontSize: 18, color: "var(--text)", fontWeight: 600, letterSpacing: "0.02em", flexShrink: 0, whiteSpace: "nowrap" }}>omp web</span>
+                <span aria-hidden="true" style={{ width: 24, height: 24, flexShrink: 0, background: "url(/nook.svg) center / contain no-repeat" }} />
+                <span style={{ fontSize: 20, color: "var(--text)", fontWeight: 600, letterSpacing: "-0.045em", flexShrink: 0, whiteSpace: "nowrap" }}>nook</span>
               </div>
               <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 2, flexShrink: 0 }}>
                 <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
@@ -993,7 +657,7 @@ export function ChatWindow({ session, newSessionCwd, toolCallsDefaultCollapsed =
             position: "absolute",
             top: 12,
             left: 0,
-            right: 0,
+            right: isMobile ? 0 : CHAT_MINIMAP_WIDTH,
             zIndex: 40,
             padding: `0 ${CHAT_COLUMN_PADDING}px`,
             pointerEvents: "none",
@@ -1006,11 +670,17 @@ export function ChatWindow({ session, newSessionCwd, toolCallsDefaultCollapsed =
         {/* Hide the Firefox scrollbar on desktop only: ChatMinimap provides the
             position indicator there, but on mobile there is no minimap and
             users need the scrollbar (Chrome's overlay scrollbar still shows). */}
-        <div ref={scrollContainerRef} className={`flex-1 overflow-y-auto pt-6` + (isMobile ? "" : " [scrollbar-width:none]")}>
+        <div ref={scrollContainerRef} className={`min-w-0 flex-1 overflow-y-auto pt-6` + (isMobile ? "" : " [scrollbar-width:none]")}>
           <div style={{ padding: `0 ${CHAT_COLUMN_PADDING}px` }}>
             <div style={{ maxWidth: CHAT_COLUMN_MAX_WIDTH, margin: "0 auto" }}>
               <ExtensionStatusBar statuses={extensionStatuses} />
               <ExtensionWidgets widgets={aboveEditorWidgets} />
+              {error && messages.length > 0 && (
+                <div role="alert" style={{ display: "flex", alignItems: "center", minHeight: 30, marginBottom: 8, padding: "6px 10px", border: "1px solid color-mix(in srgb, var(--status-error) 32%, transparent)", borderRadius: "var(--radius-control)", background: "color-mix(in srgb, var(--status-error) 7%, transparent)", color: "var(--status-error)", fontSize: 12 }}>
+                  {error}
+                </div>
+              )}
+
 
             {hasCompaction && (
               <div
@@ -1055,6 +725,8 @@ export function ChatWindow({ session, newSessionCwd, toolCallsDefaultCollapsed =
               visibleCount={visibleCount}
               nearBottom={nearBottom}
               sentinelRef={sentinelRef}
+              historyHasMore={historyPagination.hasMore}
+              historyLoading={historyLoading}
               handleLoadMoreClick={handleLoadMoreClick}
             />
             {streamState.isStreaming && streamState.streamingMessage && (
@@ -1088,38 +760,6 @@ export function ChatWindow({ session, newSessionCwd, toolCallsDefaultCollapsed =
               </div>
             ))}
 
-            {(isCompacting || (agentRunning && !streamState.streamingMessage && pendingToolHeaders.length === 0)) && (
-              <div role="status" aria-live="polite" className="py-2 text-[13px] text-text-muted flex items-center gap-2">
-                <span
-                  aria-hidden
-                  className="live-status-dot live-pulse inline-block h-2 w-2 shrink-0 rounded-full bg-accent"
-                />
-                <span>
-                  {[
-                    phaseLabel(agentPhase),
-                    activeSubagentCount > 0 ? tn("chatWindow.subagentCount", activeSubagentCount) : null,
-                    isCompacting ? t("chatWindow.compactingContext") : null,
-                    currentTodoPhase
-                      ? t("chatWindow.todoPhaseStatus", {
-                          name: currentTodoPhase.name,
-                          done: currentTodoPhase.done,
-                          total: currentTodoPhase.total,
-                        })
-                      : null,
-                  ].filter(Boolean).join(" · ")}
-                </span>
-              </div>
-            )}
-
-            {bashRunning && !pendingBash && (
-              <div role="status" aria-live="polite" className="py-2 text-[13px] text-text-muted flex items-center gap-2">
-                <span
-                  aria-hidden
-                  className="live-status-dot live-pulse inline-block h-2 w-2 shrink-0 rounded-full bg-accent"
-                />
-                <span>{t("chatWindow.runningCommand")}</span>
-              </div>
-            )}
 
             {pendingBash && (
               <MessageView
@@ -1138,7 +778,7 @@ export function ChatWindow({ session, newSessionCwd, toolCallsDefaultCollapsed =
           </div>
         </div>
         {isMobile ? null : (
-          <div style={{ position: "absolute", top: 0, bottom: 0, right: 0, zIndex: 30, display: "flex" }}>
+          <div style={{ width: CHAT_MINIMAP_WIDTH, flexShrink: 0, alignSelf: "stretch", zIndex: 30, display: "flex" }}>
             <ChatMinimap
               messages={messages}
               scrollContainer={scrollContainerRef}
@@ -1148,7 +788,7 @@ export function ChatWindow({ session, newSessionCwd, toolCallsDefaultCollapsed =
         )}
       </div>
 
-      <div className="relative" style={{ flexShrink: 0 }}>
+      <div className="relative" style={{ flexShrink: 0, marginRight: isMobile ? 0 : CHAT_MINIMAP_WIDTH }}>
         <div
           style={{
             padding: `0 ${CHAT_COLUMN_PADDING}px`,
@@ -1168,6 +808,7 @@ export function ChatWindow({ session, newSessionCwd, toolCallsDefaultCollapsed =
               todoPhases={todoPhases}
               subagents={subagents}
               onSelectSubagent={setSelectedSubagent}
+              busy={sessionBusy || isCompacting}
             />
             <ExtensionWidgets widgets={belowEditorWidgets} />
           </div>

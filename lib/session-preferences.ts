@@ -1,10 +1,11 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { dirname, join, resolve } from "path";
+import { parseActiveGoal, type ActiveGoal } from "./web-mode-state";
 
 interface SessionPreferencesFile {
   version: 1;
-  sessions: Record<string, { advisorEnabled?: boolean }>;
+  sessions: Record<string, { advisorEnabled?: boolean; goal?: ActiveGoal }>;
 }
 
 const EMPTY: SessionPreferencesFile = { version: 1, sessions: {} };
@@ -34,10 +35,11 @@ function readFile(): SessionPreferencesFile {
           Object.entries(parsed.sessions).flatMap(([id, value]) =>
             value &&
             typeof value === "object" &&
-            !Array.isArray(value) &&
-            "advisorEnabled" in value &&
-            typeof value.advisorEnabled === "boolean"
-              ? [[id, { advisorEnabled: value.advisorEnabled }]]
+            !Array.isArray(value)
+              ? [[id, {
+                  ...("advisorEnabled" in value && typeof value.advisorEnabled === "boolean" ? { advisorEnabled: value.advisorEnabled } : {}),
+                  ...("goal" in value && parseActiveGoal(value.goal) ? { goal: parseActiveGoal(value.goal)! } : {}),
+                }]]
               : [],
           ),
         )
@@ -63,7 +65,20 @@ export function getSessionAdvisorEnabled(sessionId: string): boolean {
 
 export function setSessionAdvisorEnabled(sessionId: string, enabled: boolean): void {
   const preferences = readFile();
-  preferences.sessions[sessionId] = { advisorEnabled: enabled };
+  preferences.sessions[sessionId] = { ...preferences.sessions[sessionId], advisorEnabled: enabled };
+  writeFile(preferences);
+}
+
+export function getSessionGoal(sessionId: string): ActiveGoal | null {
+  return readFile().sessions[sessionId]?.goal ?? null;
+}
+
+export function setSessionGoal(sessionId: string, goal: ActiveGoal | null): void {
+  const preferences = readFile();
+  const entry = preferences.sessions[sessionId] ?? {};
+  if (goal) entry.goal = goal;
+  else delete entry.goal;
+  preferences.sessions[sessionId] = entry;
   writeFile(preferences);
 }
 

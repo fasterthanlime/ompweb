@@ -1,15 +1,18 @@
 "use client";
 
+import type { DictationSpan } from "@/lib/dictation-display";
+import { QuickReplies } from "./QuickReplies";
 import React, { useRef, useState, useCallback, useEffect, useImperativeHandle, forwardRef, memo, KeyboardEvent } from "react";
-import { ChevronDown, ListChecks, Search, Shrink, Sparkles, Target, Zap } from "lucide-react";
-import { getSubmitDuringRunBehavior } from "@/lib/composer-prefs";
+import { ChevronDown, ListChecks, Search, Target } from "lucide-react";
+import { Menu } from "@base-ui/react/menu";
+import { Popover } from "@base-ui/react/popover";
 import type { BuiltinSlashCommandResult, CompactResultInfo, QueuedMessages, SlashCommandInfo } from "@/hooks/useAgentSession";
 import type { ActiveGoal, ActivePlan } from "@/lib/web-mode-state";
 import { formatGoalElapsed } from "@/lib/web-mode-state";
-import { toast } from "@/components/ui/toast";
+import type { ContextUsage } from "@/lib/pi-types";
 import { formatCompactNumber } from "@/lib/format";
 import { clearDraft, getDraft, setDraft, type ChatDraftFile, type ChatDraftImage } from "@/lib/draft-store";
-import { WEB_SLASH_COMMANDS, expandWebSlashCommand } from "@/lib/web-slash-commands";
+import { WEB_SLASH_COMMANDS } from "@/lib/web-slash-commands";
 import { CHAT_COLUMN_MAX_WIDTH } from "@/lib/chat-layout";
 import {
   composeMessageWithTextAttachments,
@@ -30,6 +33,7 @@ import { FolderIcon, getFileIcon } from "./FileIcons";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { useI18n } from "@/lib/i18n";
 import { selectableThinkingLevels } from "@/lib/thinking-levels";
+import { DictationControl } from "./DictationControl";
 
 export interface AttachedImage {
   data: string;   // base64, no prefix
@@ -46,11 +50,10 @@ interface ModelOption {
 }
 
 interface Props {
-  onSend: (message: string, images?: AttachedImage[]) => void;
+  onSend: (message: string, images?: AttachedImage[]) => void | boolean | Promise<void | boolean>;
   onAbort: () => void;
-  onSteer?: (message: string, images?: AttachedImage[]) => void;
-  onFollowUp?: (message: string, images?: AttachedImage[]) => void;
-  onPromptWithStreamingBehavior?: (message: string, behavior: "steer" | "followUp", images?: AttachedImage[]) => void;
+  /** Mid-run submit: abort the running agent and send the message as a fresh prompt (stop+send). Resolves true only when the interrupt+send was accepted; the composer clears its draft only on success. */
+  onInterruptAndReply?: (message: string, images?: AttachedImage[]) => Promise<boolean>;
   isStreaming: boolean;
   model?: { provider: string; modelId: string } | null;
   isAutoModelSelection?: boolean;
@@ -66,6 +69,8 @@ interface Props {
   onAbortCompaction?: () => void;
   isCompacting?: boolean;
   compactResult?: CompactResultInfo | null;
+  /** Live context window usage (tokens/window/percent) for the composer ring. */
+  contextUsage?: ContextUsage | null;
   thinkingLevel?: string;
   onThinkingLevelChange?: (level: string) => void;
   availableThinkingLevels?: string[] | null;
@@ -134,6 +139,21 @@ export function filterModelOptions(options: ModelOption[], query: string, locale
     || option.modelId.toLocaleLowerCase(locale).includes(normalizedQuery)
     || option.provider.toLocaleLowerCase(locale).includes(normalizedQuery)
   ));
+}
+
+/**
+ * Device-touch heuristic for Enter behavior: phones/tablets insert a newline
+ * with the keyboard's return key, desktop sends. Deliberately NOT viewport
+ * based — a narrow desktop window must keep Enter-to-send.
+ */
+function detectTouchDevice(): boolean {
+  if (typeof window === "undefined" || typeof navigator === "undefined") return false;
+  if (Number(navigator.maxTouchPoints) > 0) return true;
+  try {
+    return window.matchMedia("(pointer: coarse)").matches;
+  } catch {
+    return false;
+  }
 }
 
 
@@ -330,14 +350,15 @@ function ComposerModeStatus({ goal, plan }: { goal?: ActiveGoal | null; plan?: A
   const { t } = useI18n();
   const [expanded, setExpanded] = useState(false);
   const [now, setNow] = useState(() => Date.now());
+  const goalId = goal?.id;
 
   useEffect(() => {
-    if (!goal) return;
+    if (!goalId) return;
     setExpanded(false);
     setNow(Date.now());
     const timer = window.setInterval(() => setNow(Date.now()), 30_000);
     return () => window.clearInterval(timer);
-  }, [goal]);
+  }, [goalId]);
 
   if (!goal && !plan) return null;
   return (
@@ -360,10 +381,12 @@ function ComposerModeStatus({ goal, plan }: { goal?: ActiveGoal | null; plan?: A
         >
           <Target size={14} strokeWidth={2} style={{ flexShrink: 0, marginTop: expanded ? 1 : 0, color: "var(--accent)" }} aria-hidden="true" />
           <span style={{ flexShrink: 0, color: "var(--text-dim)", fontSize: 10, fontFamily: "var(--font-mono)", textTransform: "uppercase", letterSpacing: "0.04em" }}>
-            {t("chatInput.goalActive")} · {formatGoalElapsed(now - goal.startedAt)}
+            {t(`chatInput.goal${goal.status[0].toUpperCase()}${goal.status.slice(1)}` as "chatInput.goalActive")} · {formatGoalElapsed(now - goal.startedAt)}
           </span>
           <span style={{ minWidth: 0, flex: 1, overflow: expanded ? "visible" : "hidden", textOverflow: expanded ? undefined : "ellipsis", whiteSpace: expanded ? "pre-wrap" : "nowrap", fontSize: 12, lineHeight: 1.4 }}>
             {goal.objective}
+            {expanded && goal.summary && <span style={{ display: "block", marginTop: 4, color: "var(--text-muted)" }}>{goal.summary}</span>}
+            {expanded && <span style={{ display: "block", marginTop: 4, color: "var(--text-dim)", fontFamily: "var(--font-mono)" }}>/goal pause · /goal resume · /goal clear</span>}
           </span>
         </button>
       )}
@@ -379,14 +402,13 @@ function ComposerModeStatus({ goal, plan }: { goal?: ActiveGoal | null; plan?: A
 }
 
 export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatInput({
-  onSend, onAbort, onSteer, onFollowUp, isStreaming, model, isAutoModelSelection, modelNames, modelList, modelError, modelsLoading, onModelChange, fastModeEnabled, fastModeActive, fastModeSupported, onFastModeChange,
+  onSend, onAbort, onInterruptAndReply, isStreaming, model, isAutoModelSelection, modelNames, modelList, modelError, modelsLoading, onModelChange, fastModeEnabled, fastModeActive, fastModeSupported, onFastModeChange,
   onAbortCompaction, isCompacting, compactResult,
   thinkingLevel, onThinkingLevelChange, availableThinkingLevels, thinkingLevelMap, modelNameOverride,
   retryInfo, queuedMessages, inputHistory = [], onAbortRetry,
   slashCommands, slashCommandsLoading, onLoadSlashCommands,
   onBuiltinCommand,
   onAudioUnlock,
-  onPromptWithStreamingBehavior,
   advisorActive,
   advisorModel,
   onCompact,
@@ -397,6 +419,7 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
   activeGoal,
   activePlan,
   advisorEnabled,
+  contextUsage,
   onAdvisorChange,
 }: Props, ref) {
   const isMobile = useIsMobile();
@@ -417,6 +440,41 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
     draftKey ? draftFilesToAttachedFiles(getDraft(draftKey)?.files) : []
   ));
   const [attachError, setAttachError] = useState<string | null>(null);
+  // Device capability (maxTouchPoints / coarse pointer), not viewport width:
+  // phones and tablets newline on Enter, desktop submits.
+  const [isTouchDevice] = useState(detectTouchDevice);
+  const [keyboardOpen, setKeyboardOpen] = useState(false);
+  useEffect(() => {
+    const viewport = window.visualViewport;
+    if (!isTouchDevice || !viewport) return;
+    const update = () => {
+      const focused = document.activeElement;
+      const editing = focused instanceof HTMLTextAreaElement || focused instanceof HTMLInputElement || (focused instanceof HTMLElement && focused.isContentEditable);
+      const occluded = document.documentElement.clientHeight - viewport.height - viewport.offsetTop;
+      setKeyboardOpen(editing && Math.abs(viewport.scale - 1) < 0.05 && occluded > 100);
+    };
+    viewport.addEventListener("resize", update);
+    viewport.addEventListener("scroll", update);
+    document.addEventListener("focusin", update);
+    document.addEventListener("focusout", update);
+    update();
+    return () => {
+      viewport.removeEventListener("resize", update);
+      viewport.removeEventListener("scroll", update);
+      document.removeEventListener("focusin", update);
+      document.removeEventListener("focusout", update);
+    };
+  }, [isTouchDevice]);
+  // True while dictation is capturing (permission/recording/transcribing);
+  // the parent then hides the toolbar row and the control takes the row.
+  const previewOverlayRef = useRef<HTMLDivElement>(null);
+  const [previewSpans, setPreviewSpans] = useState<DictationSpan[] | undefined>();
+  const acceptPreview = useCallback((text: string, spans?: DictationSpan[]) => { setDictationPreview(text); setPreviewSpans(spans); }, []);
+  const [dictationPreview, setDictationPreview] = useState("");
+  const [dictationActive, setDictationActive] = useState(false);
+  const [typingFocused, setTypingFocused] = useState(false);
+  const editorValue = value + (dictationPreview ? (value && !/\s$/.test(value) ? " " : "") + dictationPreview : "");
+  const [dictationSubmit, setDictationSubmit] = useState(false);
   const trimmedValue = value.trimStart();
   const bashMode = attachedImages.length === 0 && attachedTextFiles.length === 0 && trimmedValue.startsWith("!");
   const bashExcluded = bashMode && trimmedValue.startsWith("!!");
@@ -635,15 +693,11 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
   }, []);
 
   const processFiles = useCallback((files: File[]) => {
-    if (isStreaming) {
-      setAttachError("Attachments are disabled while the agent is running.");
-      return;
-    }
     const imageFiles = files.filter((file) => file.type.startsWith("image/"));
     const otherFiles = files.filter((file) => !file.type.startsWith("image/"));
     void processImageFiles(imageFiles);
     void processTextFiles(otherFiles);
-  }, [isStreaming, processImageFiles, processTextFiles]);
+  }, [processImageFiles, processTextFiles]);
 
   const removeImage = useCallback((index: number) => {
     setAttachedImages((prev) => {
@@ -723,8 +777,8 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
     const ta = textareaRef.current;
     if (!ta) return;
     ta.style.height = "auto";
-    if (value) ta.style.height = `${Math.min(ta.scrollHeight, 200)}px`;
-  }, [value]);
+    if (editorValue) ta.style.height = `${Math.min(ta.scrollHeight, 200)}px`;
+  }, [editorValue]);
 
   useEffect(() => {
     return () => {
@@ -732,22 +786,58 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
     };
   }, []);
 
+  const submittingRef = useRef(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const latestDraftRef = useRef({ value, attachedImages, attachedTextFiles, draftKey });
+  latestDraftRef.current = { value, attachedImages, attachedTextFiles, draftKey };
   const handleSend = useCallback(async () => {
     const msg = value.trim();
     if (!msg && !attachedImages.length && !attachedTextFiles.length) return;
-    if (isStreaming) return;
-    onAudioUnlock?.();
-    const composedMessage = composeMessageWithTextAttachments(msg, attachedTextFiles);
-    if (!attachedImages.length && !attachedTextFiles.length && msg.startsWith("/") && onBuiltinCommand) {
-      const result = await onBuiltinCommand(msg);
-      if (result.handled) {
-        if (!result.error && !result.retainInput) clearInput();
+    if (submittingRef.current) return;
+    const snapshot = latestDraftRef.current;
+    if (snapshot.value !== value || snapshot.attachedImages !== attachedImages || snapshot.attachedTextFiles !== attachedTextFiles) return;
+    submittingRef.current = true;
+    setSubmitting(true);
+    setSubmitError(null);
+    const clearSubmittedDraft = () => {
+      const latest = latestDraftRef.current;
+      if (latest.value === value && latest.attachedImages === attachedImages && latest.attachedTextFiles === attachedTextFiles && latest.draftKey === snapshot.draftKey) {
+        latestDraftRef.current = { ...latest, value: "" };
+        clearInput();
+      }
+    };
+    try {
+      onAudioUnlock?.();
+      const composedMessage = composeMessageWithTextAttachments(msg, attachedTextFiles);
+      const images = attachedImages.length ? attachedImages : undefined;
+      // Builtin slash commands are dispatched to the session regardless of run
+      // state; unknown /commands fall through to the agent like plain text.
+      if (!attachedImages.length && !attachedTextFiles.length && msg.startsWith("/") && onBuiltinCommand) {
+        const result = await onBuiltinCommand(msg);
+        if (result.handled) {
+          if (!result.error && !result.retainInput) clearSubmittedDraft();
+          return;
+        }
+      }
+      if (isStreaming) {
+        // Mid-run submit defaults to stop+send: interrupt the current run and
+        // deliver the composer contents as a fresh prompt. Clear only on
+        // success so a failed interrupt keeps the draft intact.
+        if (!onInterruptAndReply) return;
+        const ok = await onInterruptAndReply(composedMessage, images);
+        if (ok) clearSubmittedDraft();
+        else setSubmitError("Message not sent. Your draft is kept; try again.");
         return;
       }
-    }
-    onSend(composedMessage, attachedImages.length ? attachedImages : undefined);
-    clearInput();
-  }, [value, attachedImages, attachedTextFiles, isStreaming, onBuiltinCommand, onSend, clearInput, onAudioUnlock]);
+      const accepted = await onSend(composedMessage, images);
+      if (accepted !== false) clearSubmittedDraft();
+      else setSubmitError("Message not sent. Your draft is kept; try again.");
+    } catch (error) {
+      setSubmitError(error instanceof Error ? error.message : "Message not sent. Your draft is kept.");
+    } finally { submittingRef.current = false; setSubmitting(false); }
+  }, [value, attachedImages, attachedTextFiles, isStreaming, onBuiltinCommand, onInterruptAndReply, onSend, clearInput, onAudioUnlock]);
+
 
   const slashQuery = value.startsWith("/") && !/\s/.test(value.slice(1))
     ? value.slice(1).toLowerCase()
@@ -1015,56 +1105,14 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
     });
   }, []);
 
-  const sendQueued = useCallback((mode: "steer" | "followup") => {
-    const msg = value.trim();
-    if (!msg && !attachedImages.length && !attachedTextFiles.length) return;
-    if (attachedImages.length || attachedTextFiles.length) return;
-    onAudioUnlock?.();
-    const streamingBehavior = mode === "steer" ? "steer" : "followUp";
-    if (msg.startsWith("/") && onPromptWithStreamingBehavior) {
-      const commandName = msg.slice(1).split(/\s+/)[0];
-      // Same gate as the direct path (useAgentSession refuses /advisor while
-      // disabled): queueing must not become a bypass around the toggle.
-      if (commandName === "advisor" && !advisorEnabled) {
-        toast.error(t("agentSession.advisorDisabled"));
-        return;
-      }
-      // Web commands must be expanded even when queued: the raw slash text
-      // would otherwise reach omp as a literal message (its /goal //plan are
-      // TUI-only). Action commands (compact/...) keep the raw text so omp's
-      // own ACP handlers can run them.
-      const expansion = expandWebSlashCommand(msg);
-      if (expansion.kind === "expand") {
-        onPromptWithStreamingBehavior(expansion.prompt, streamingBehavior, attachedImages.length ? attachedImages : undefined);
-        clearInput();
-        return;
-      }
-      if (expansion.kind === "usage-error") {
-        toast.error(t("chatInput.commandUsageTitle"), t("agentSession.commandRequiresArgs", {
-          command: expansion.command,
-          usage: t(expansion.argumentHintKey),
-        }));
-        return;
-      }
-      onPromptWithStreamingBehavior(msg, streamingBehavior, attachedImages.length ? attachedImages : undefined);
-      clearInput();
-      return;
-    }
-    if (mode === "steer" && onSteer) {
-      onSteer(msg, attachedImages.length ? attachedImages : undefined);
-    } else if (mode === "followup" && onFollowUp) {
-      onFollowUp(msg, attachedImages.length ? attachedImages : undefined);
-    }
-    clearInput();
-  }, [value, attachedImages, attachedTextFiles, onPromptWithStreamingBehavior, onSteer, onFollowUp, clearInput, onAudioUnlock, t, advisorEnabled]);
-  // A typed, text-only message during a run is a queued follow-up. Keep Stop
-  // as the action while the composer is empty or contains attachments.
-  const primaryActionQueuesMessage =
-    isStreaming
-    && Boolean(value.trim())
-    && attachedImages.length === 0
-    && attachedTextFiles.length === 0
-    && Boolean(onFollowUp);
+  useEffect(() => {
+    if (!dictationSubmit) return;
+    setDictationSubmit(false);
+    // Recording send follows the same submit path as the Send button: a
+    // running agent is interrupted and the transcript is delivered as a
+    // fresh prompt (stop+send).
+    void handleSend();
+  }, [dictationSubmit, handleSend]);
 
   // ── Queued follow-up bar ────────────────────────────────────────────────
   // omp reports only a queued count over RPC; the texts are tracked in a
@@ -1273,20 +1321,18 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
         return;
       }
 
+      // Desktop Enter submits through the same path as the Send button —
+      // idle sends normally, mid-run stops the agent and sends (stop+send).
       if (e.key === "Enter" && !e.shiftKey) {
+        // Touch devices always insert a newline; only the arrow submits.
+        // Desktop: Enter submits, Shift+Enter inserts a newline.
+        // (The IME guard above already released composition-enters.)
+        if (isTouchDevice) return;
         e.preventDefault();
-        if (isStreaming && (onSteer || onFollowUp)) {
-          // Submit-during-run behavior comes from Settings (Steer current run
-          // by default, or Queue follow-up); no in-composer selector.
-          const behavior = getSubmitDuringRunBehavior();
-          if (behavior === "steer" && onSteer) sendQueued("steer");
-          else sendQueued("followup");
-        } else {
-          handleSend();
-        }
+        void handleSend();
       }
     },
-    [isStreaming, onSteer, onFollowUp, onAbort, slashMenuOpen, slashQuery, filteredSlashCommands, slashActiveIndex, applySlashCommand, sendQueued, handleSend, getNextSlashIndex, atMenuOpen, atQuery, atMatches, atActiveIndex, applyAtCompletion, historyMenuOpen, inputHistory, historyActiveIndex, applyHistoryInput, value]
+    [isStreaming, onAbort, slashMenuOpen, slashQuery, filteredSlashCommands, slashActiveIndex, applySlashCommand, handleSend, getNextSlashIndex, atMenuOpen, atQuery, atMatches, atActiveIndex, applyAtCompletion, historyMenuOpen, inputHistory, historyActiveIndex, applyHistoryInput, value, isTouchDevice]
   );
 
   const handleInput = useCallback(() => {
@@ -1297,13 +1343,38 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
   }, []);
 
   const handlePaste = useCallback((e: React.ClipboardEvent) => {
+    if (dictationActive) return;
     const items = Array.from(e.clipboardData?.items ?? []);
     const imageItems = items.filter((item) => item.type.startsWith("image/"));
-    if (!imageItems.length) return;
+    if (imageItems.length) {
+      e.preventDefault();
+      const files = imageItems.map((item) => item.getAsFile()).filter((f): f is File => f !== null);
+      processFiles(files);
+      return;
+    }
+    const text = e.clipboardData.getData("text/plain");
+    if (text.length < 2000 && text.split(/\r\n|\r|\n/).length < 30) return;
     e.preventDefault();
-    const files = imageItems.map((item) => item.getAsFile()).filter((f): f is File => f !== null);
-    processFiles(files);
-  }, [processFiles]);
+    const size = new TextEncoder().encode(text).byteLength;
+    if (size > MAX_ATTACHED_TEXT_BYTES) {
+      setAttachError(`Paste exceeds the ${Math.round(MAX_ATTACHED_TEXT_BYTES / 1024)} KB text attachment limit. Your clipboard and draft are unchanged.`);
+      return;
+    }
+    if (attachedTextFilesRef.current.length + pendingTextFileCountRef.current >= MAX_ATTACHED_TEXT_FILES) {
+      setAttachError(`Maximum of ${MAX_ATTACHED_TEXT_FILES} text attachments reached. Your clipboard and draft are unchanged.`);
+      return;
+    }
+    let number = 1;
+    const names = new Set(attachedTextFilesRef.current.map(file => file.name));
+    while (names.has(`Pasted text ${number}.txt`)) number++;
+    const attachment: AttachedTextFile = { name: `Pasted text ${number}.txt`, mimeType: "text/plain", content: text, size };
+    // Clipboard text is already decoded: preserve it verbatim, including NUL,
+    // replacement characters, whitespace, and line endings.
+    const next = [...attachedTextFilesRef.current, attachment];
+    attachedTextFilesRef.current = next;
+    setAttachedTextFiles(next);
+    setAttachError(null);
+  }, [dictationActive, processFiles]);
 
   useEffect(() => {
     if (slashQuery === null) {
@@ -1392,7 +1463,7 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
   // A failed load surfaces modelError; only an in-flight load shows the
   // loading chip, so "no models" can only appear after the fetch settled.
   const showModelsLoading = Boolean(modelsLoading) && !modelError;
-  const modelSelectorDisabled = isStreaming || (showModelsLoading && modelOptions.length === 0);
+  const modelSelectorDisabled = showModelsLoading && modelOptions.length === 0;
 
   const compactSavedTokens = compactResult
     ? Math.max(0, compactResult.tokensBefore - compactResult.estimatedTokensAfter)
@@ -1419,12 +1490,6 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
     () => selectableThinkingLevels(availableThinkingLevels),
     [availableThinkingLevels],
   );
-  // A run starting mid-interaction must not leave the reasoning menu
-  // open: the level only applies to the next prompt, and the trigger is
-  // disabled while streaming.
-  useEffect(() => {
-    if (isStreaming) setThinkingDropdownOpen(false);
-  }, [isStreaming]);
 
   useEffect(() => {
     if (!modelDropdownOpen) {
@@ -1459,7 +1524,7 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
       style={{
         flexShrink: 0,
         background: "transparent",
-         padding: "0 16px calc(8px + env(safe-area-inset-bottom))",
+         padding: `0 var(--composer-gutter, 16px) ${keyboardOpen ? "8px" : "calc(8px + env(safe-area-inset-bottom))"}`,
       }}
     >
       {/* Hidden file input */}
@@ -1471,7 +1536,6 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
         // only hide files the app can attach (code, config, logs, ...).
         accept="*/*"
         multiple
-        disabled={isStreaming}
         style={{ display: "none" }}
         onChange={(e) => {
           const files = Array.from(e.target.files ?? []);
@@ -1541,96 +1605,6 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
             borderRadius: 6, fontSize: 12, color: "var(--status-error)",
           }}>
             {attachError}
-          </div>
-        )}
-        {attachedImages.length > 0 && (
-          <div style={{ display: "flex", gap: 6, marginBottom: 6, flexWrap: "wrap" }}>
-            {attachedImages.map((img, i) => (
-              <div key={i} style={{ position: "relative", flexShrink: 0 }}>
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img
-                  src={img.previewUrl}
-                  alt=""
-                  style={{ width: 56, height: 56, objectFit: "cover", borderRadius: 6, border: "1px solid var(--border)", display: "block" }}
-                />
-                <button
-                  onClick={() => removeImage(i)}
-                  title="Remove image"
-                  aria-label="Remove image"
-                  style={{
-                    position: "absolute", top: -5, right: -5,
-                    width: 24, height: 24, borderRadius: "50%",
-                    background: "var(--bg-panel)", border: "1px solid var(--border)",
-                    display: "flex", alignItems: "center", justifyContent: "center",
-                    cursor: "pointer", padding: 0, color: "var(--text-muted)",
-                    transition: "color var(--dur-fast) var(--ease-out-warm), background var(--dur-fast) var(--ease-out-warm)",
-                  }}
-                  onMouseEnter={(e) => { e.currentTarget.style.color = "var(--text)"; e.currentTarget.style.background = "var(--bg-hover)"; }}
-                  onMouseLeave={(e) => { e.currentTarget.style.color = "var(--text-muted)"; e.currentTarget.style.background = "var(--bg-panel)"; }}
-                >
-                  <svg width="9" height="9" viewBox="0 0 8 8" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
-                    <line x1="1" y1="1" x2="7" y2="7" /><line x1="7" y1="1" x2="1" y2="7" />
-                  </svg>
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-        {attachedTextFiles.length > 0 && (
-          <div style={{ display: "flex", gap: 6, marginBottom: 6, flexWrap: "wrap" }}>
-            {attachedTextFiles.map((file, i) => (
-              <div
-                key={i}
-                style={{
-                  display: "flex", alignItems: "center", gap: 7,
-                  maxWidth: 260, height: 30,
-                  padding: "0 6px 0 9px",
-                  border: "1px solid var(--border)",
-                  borderRadius: 6,
-                  background: "var(--bg-panel)",
-                  fontSize: 12,
-                  color: "var(--text)",
-                }}
-              >
-                <span style={{ flexShrink: 0, display: "flex", color: "var(--text-muted)" }}>
-                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z" />
-                    <polyline points="14 2 14 8 20 8" />
-                  </svg>
-                </span>
-                <span
-                  title={file.name}
-                  style={{
-                    minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-                    fontFamily: "var(--font-mono)", fontSize: 11.5,
-                  }}
-                >
-                  {file.name}
-                </span>
-                <span style={{ flexShrink: 0, fontSize: 10, color: "var(--text-dim)" }}>
-                  {file.size < 1024 ? `${file.size} B` : `${Math.round(file.size / 1024)} KB`}
-                </span>
-                <button
-                  onClick={() => removeTextFile(i)}
-                  title="Remove file"
-                  aria-label="Remove file"
-                  style={{
-                    flexShrink: 0, width: 18, height: 18,
-                    borderRadius: "50%",
-                    display: "flex", alignItems: "center", justifyContent: "center",
-                    background: "transparent", border: "none",
-                    cursor: "pointer", padding: 0, color: "var(--text-muted)",
-                    transition: "color var(--dur-fast) var(--ease-out-warm), background var(--dur-fast) var(--ease-out-warm)",
-                  }}
-                  onMouseEnter={(e) => { e.currentTarget.style.color = "var(--text)"; e.currentTarget.style.background = "var(--bg-hover)"; }}
-                  onMouseLeave={(e) => { e.currentTarget.style.color = "var(--text-muted)"; e.currentTarget.style.background = "transparent"; }}
-                >
-                  <svg width="9" height="9" viewBox="0 0 8 8" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
-                    <line x1="1" y1="1" x2="7" y2="7" /><line x1="7" y1="1" x2="1" y2="7" />
-                  </svg>
-                </button>
-              </div>
-            ))}
           </div>
         )}
 
@@ -2154,14 +2128,111 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
               background: "var(--bg)",
               border: `1px solid ${bashMode ? "var(--tool-bg)" : "color-mix(in srgb, var(--border) 70%, transparent)"}`,
               borderRadius: "var(--radius-card)",
-              padding: "12px 12px 10px 14px",
+              padding: "14px 16px 12px 16px",
               boxShadow: "var(--shadow-card)",
               transition: "border-color var(--dur-fast) var(--ease-out-warm), background var(--dur-fast) var(--ease-out-warm), box-shadow var(--dur-fast) var(--ease-out-warm)",
             } as React.CSSProperties}
           >
+        {attachedImages.length > 0 && (
+          <div style={{ display: "flex", gap: 6, marginBottom: 6, flexWrap: "wrap" }}>
+            {attachedImages.map((img, i) => (
+              <div key={i} style={{ position: "relative", flexShrink: 0 }}>
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={img.previewUrl}
+                  alt=""
+                  style={{ width: 56, height: 56, objectFit: "cover", borderRadius: 6, border: "1px solid var(--border)", display: "block" }}
+                />
+                <button
+                  onClick={() => removeImage(i)}
+                  title="Remove image"
+                  aria-label="Remove image"
+                  style={{
+                    position: "absolute", top: -5, right: -5,
+                    width: 24, height: 24, borderRadius: "50%",
+                    background: "var(--bg-panel)", border: "1px solid var(--border)",
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    cursor: "pointer", padding: 0, color: "var(--text-muted)",
+                    transition: "color var(--dur-fast) var(--ease-out-warm), background var(--dur-fast) var(--ease-out-warm)",
+                  }}
+                  onMouseEnter={(e) => { e.currentTarget.style.color = "var(--text)"; e.currentTarget.style.background = "var(--bg-hover)"; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.color = "var(--text-muted)"; e.currentTarget.style.background = "var(--bg-panel)"; }}
+                >
+                  <svg width="9" height="9" viewBox="0 0 8 8" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+                    <line x1="1" y1="1" x2="7" y2="7" /><line x1="7" y1="1" x2="1" y2="7" />
+                  </svg>
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+        {attachedTextFiles.length > 0 && (
+          <div style={{ display: "flex", gap: 6, marginBottom: 6, flexWrap: "wrap" }}>
+            {attachedTextFiles.map((file, i) => (
+              <div
+                key={i}
+                style={{
+                  display: "flex", alignItems: "center", gap: 7,
+                  maxWidth: 260, height: 30,
+                  padding: "0 6px 0 9px",
+                  border: "1px solid var(--border)",
+                  borderRadius: 6,
+                  background: "var(--bg-panel)",
+                  fontSize: 12,
+                  color: "var(--text)",
+                }}
+              >
+                <span style={{ flexShrink: 0, display: "flex", color: "var(--text-muted)" }}>
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z" />
+                    <polyline points="14 2 14 8 20 8" />
+                  </svg>
+                </span>
+                <span
+                  title={file.name}
+                  style={{
+                    minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                    fontFamily: "var(--font-mono)", fontSize: 11.5,
+                  }}
+                >
+                  {file.name}
+                </span>
+                <span style={{ flexShrink: 0, fontSize: 10, color: "var(--text-dim)" }}>
+                  {file.size < 1024 ? `${file.size} B` : `${Math.round(file.size / 1024)} KB`}
+                </span>
+                <button
+                  onClick={() => removeTextFile(i)}
+                  title="Remove file"
+                  aria-label="Remove file"
+                  style={{
+                    flexShrink: 0, width: 18, height: 18,
+                    borderRadius: "50%",
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    background: "transparent", border: "none",
+                    cursor: "pointer", padding: 0, color: "var(--text-muted)",
+                    transition: "color var(--dur-fast) var(--ease-out-warm), background var(--dur-fast) var(--ease-out-warm)",
+                  }}
+                  onMouseEnter={(e) => { e.currentTarget.style.color = "var(--text)"; e.currentTarget.style.background = "var(--bg-hover)"; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.color = "var(--text-muted)"; e.currentTarget.style.background = "transparent"; }}
+                >
+                  <svg width="9" height="9" viewBox="0 0 8 8" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+                    <line x1="1" y1="1" x2="7" y2="7" /><line x1="7" y1="1" x2="1" y2="7" />
+                  </svg>
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+          <div style={{ position: "relative", minWidth: 0 }}>
+          {!value && !attachedImages.length && !attachedTextFiles.length && !dictationActive && !submitting && !typingFocused && <QuickReplies onStartTyping={() => { setTypingFocused(true); textareaRef.current?.focus(); }} onReply={message => isStreaming && onInterruptAndReply ? onInterruptAndReply(message) : onSend(message)} />}
           <textarea
             ref={textareaRef}
-            value={value}
+            autoComplete="off"
+            onFocus={() => setTypingFocused(true)}
+            onBlur={() => setTypingFocused(false)}
+            value={editorValue}
+            readOnly={dictationActive}
+            onScroll={event => { if (previewOverlayRef.current) previewOverlayRef.current.scrollTop = event.currentTarget.scrollTop; }}
             onChange={(e) => {
               setValue(e.target.value);
               setHistoryMenuOpen(false);
@@ -2183,100 +2254,200 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
             }}
             onInput={handleInput}
             onPaste={handlePaste}
-            placeholder={t("chatInput.placeholder")}
+            placeholder={!value && !attachedImages.length && !attachedTextFiles.length && !dictationActive ? "" : t("chatInput.placeholder")}
             rows={1}
             style={{
+              display: "block",
               width: "100%",
               background: "none",
               border: "none",
               outline: "none",
               resize: "none",
-              color: "var(--text)",
-              fontSize: 14,
-              lineHeight: 1.6,
+              color: dictationPreview && previewSpans ? "transparent" : "var(--text)",
+              fontSize: 18,
+              lineHeight: 1.5,
               fontFamily: "inherit",
               minHeight: 24,
               maxHeight: 200,
               overflow: "auto",
             }}
           />
+          {dictationPreview && previewSpans && <div ref={previewOverlayRef} aria-hidden="true" style={{ position: "absolute", inset: 0, pointerEvents: "none", overflow: "hidden", whiteSpace: "pre-wrap", overflowWrap: "break-word", fontFamily: "inherit", fontSize: 18, lineHeight: 1.5, color: "var(--text)" }}>{value}{value && !/\s$/.test(value) ? " " : ""}{previewSpans.map((span,index)=><span key={index} style={{color:span.kind === "punctuation" && !span.stable ? "var(--text-dim)" : "var(--text)"}}>{span.text}</span>)}</div>}
+          </div>
 
-          {/* Toolbar: attachment · advisor · model · settings · reasoning · fast · compact · send/queue/stop */}
-
-          {/* Toolbar: attachment · model · settings · reasoning · fast · context ring · send/stop */}
-          <div style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 2,
-            marginTop: 8,
-            paddingTop: 8,
-            borderTop: "1px solid color-mix(in srgb, var(--border) 62%, transparent)",
-            flexWrap: isMobile ? "wrap" : "nowrap",
-          }}>
-            {/* Attachment */}
-            <button
-              onClick={() => fileInputRef.current?.click()}
-              disabled={isStreaming}
-              title={t("chatInput.attachFile")}
-              aria-label={t("chatInput.attachFile")}
-              style={{
-                flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center",
-                width: 28, height: 28, padding: 0,
-                background: "none", border: "none",
-                borderRadius: 7,
-                color: (attachedImages.length || attachedTextFiles.length) ? "var(--accent)" : "var(--text-muted)",
-                cursor: isStreaming ? "not-allowed" : "pointer",
-                opacity: isStreaming ? 0.5 : 1,
-                transition: "background var(--dur-fast) var(--ease-out-warm), color var(--dur-fast) var(--ease-out-warm)",
-              }}
-              onMouseEnter={(e) => {
-                if (isStreaming) return;
-                e.currentTarget.style.background = "var(--bg-hover)";
-                e.currentTarget.style.color = (attachedImages.length || attachedTextFiles.length) ? "var(--accent)" : "var(--text)";
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.background = "none";
-                e.currentTarget.style.color = (attachedImages.length || attachedTextFiles.length) ? "var(--accent)" : "var(--text-muted)";
-              }}
-            >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-                <polyline points="14 2 14 8 20 8" />
-              </svg>
-            </button>
-
-            {/* Advisor toggle — per-chat: gates the /advisor command and the
-                thunder indicator; active state follows this session only. */}
-            {onAdvisorChange && (
-              <button
-                type="button"
-                onClick={() => onAdvisorChange(!advisorEnabled)}
-                aria-pressed={advisorEnabled}
-                title={advisorEnabled
-                  ? t("chatInput.advisorDisableTitle", { model: advisorModel?.name ?? t("messageView.advisorLabel"), reasoning: advisorModel?.reasoning ?? t("chatInput.advisorReasoningDefault") })
-                  : t("chatInput.advisorEnableTitle")}
-                aria-label={advisorEnabled
-                  ? t("chatInput.advisorDisableTitle", { model: advisorModel?.name ?? t("messageView.advisorLabel"), reasoning: advisorModel?.reasoning ?? t("chatInput.advisorReasoningDefault") })
-                  : t("chatInput.advisorEnableTitle")}
-                style={{
-                  flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center",
-                  width: 28, height: 28, padding: 0,
-                  background: "none", border: "none",
-                  borderRadius: 7,
-                  color: advisorEnabled ? "var(--accent)" : "var(--text-muted)",
-                  cursor: "pointer",
-                  transition: "background var(--dur-fast) var(--ease-out-warm), color var(--dur-fast) var(--ease-out-warm)",
-                }}
-                onMouseEnter={(e) => { e.currentTarget.style.background = "var(--bg-hover)"; }}
-                onMouseLeave={(e) => { e.currentTarget.style.background = "none"; }}
-              >
-                <Sparkles size={14} strokeWidth={2} aria-hidden="true" />
-              </button>
+          {/* Toolbar: + attachment (labelled menu) · context ring · model · reasoning · dictation · send/stop */}
+          {submitError && <div role="alert" style={{color:"var(--status-error)",fontSize:12,marginTop:6}}>{submitError}</div>}
+          <div className="composer-toolbar" aria-busy={submitting}>
+            {!dictationActive && (
+              <Menu.Root>
+                <Menu.Trigger
+                  render={(props) => (
+                    <button
+                      {...props}
+                      type="button"
+                      className="composer-round-button"
+                      aria-label={t("chatInput.attachFile")}
+                      title={t("chatInput.attachFile")}
+                      data-attached={(attachedImages.length || attachedTextFiles.length) ? "true" : "false"}
+                    >
+                      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                        <path d="M12 5v14" />
+                        <path d="M5 12h14" />
+                      </svg>
+                    </button>
+                  )}
+                />
+                <Menu.Portal>
+                  <Menu.Positioner side="top" align="start" sideOffset={8}>
+                    <Menu.Popup className="composer-menu">
+                      <Menu.Item
+                        className="composer-menu-item"
+                        onClick={() => fileInputRef.current?.click()}
+                      >
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                          <polyline points="14 2 14 8 20 8" />
+                        </svg>
+                        <span className="composer-menu-item-label">{t("chatInput.menuAttach")}</span>
+                      </Menu.Item>
+                      <Menu.Separator className="composer-menu-separator" />
+                      {onAdvisorChange && (
+                        <Menu.CheckboxItem
+                          className="composer-menu-item"
+                          checked={advisorEnabled}
+                          onCheckedChange={(next) => onAdvisorChange(next)}
+                          title={advisorEnabled
+                            ? t("chatInput.advisorDisableTitle", { model: advisorModel?.name ?? t("messageView.advisorLabel"), reasoning: advisorModel?.reasoning ?? t("chatInput.advisorReasoningDefault") })
+                            : t("chatInput.advisorEnableTitle")}
+                        >
+                          <span className="composer-menu-item-label">{t("chatInput.menuAdvisor")}</span>
+                          <span className="composer-menu-sub">
+                            {advisorEnabled
+                              ? `${advisorModel?.name ?? t("chatInput.menuOn")}${advisorActive ? ` · ${t("chatInput.advisorReviewing")}` : ""}`
+                              : t("chatInput.menuOff")}
+                          </span>
+                          {advisorEnabled && (
+                            <span className="composer-menu-check" aria-hidden="true">
+                              <svg width="11" height="11" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="1.5 5 4 7.5 8.5 2.5" /></svg>
+                            </span>
+                          )}
+                        </Menu.CheckboxItem>
+                      )}
+                      {fastModeSupported && onFastModeChange && (
+                        <Menu.CheckboxItem
+                          className="composer-menu-item"
+                          checked={fastModeEnabled}
+                          onCheckedChange={(next) => onFastModeChange(next)}
+                          title={fastModeEnabled && fastModeActive === false ? "Fast mode is enabled but inactive for this model" : `Turn OMP Fast mode ${fastModeEnabled ? "off" : "on"} for this model`}
+                        >
+                          <span className="composer-menu-item-label">{t("chatInput.menuFast")}</span>
+                          <span className="composer-menu-sub">
+                            {fastModeEnabled && fastModeActive === false ? t("chatInput.fastInactive") : fastModeEnabled ? t("chatInput.menuOn") : t("chatInput.menuOff")}
+                          </span>
+                          {fastModeEnabled && (
+                            <span className="composer-menu-check" aria-hidden="true">
+                              <svg width="11" height="11" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="1.5 5 4 7.5 8.5 2.5" /></svg>
+                            </span>
+                          )}
+                        </Menu.CheckboxItem>
+                      )}
+                    </Menu.Popup>
+                  </Menu.Positioner>
+                </Menu.Portal>
+              </Menu.Root>
             )}
 
-            {/* Model selector — compact text button with dropdown */}
-            {(modelOptions.length > 0 || currentName || modelError || showModelsLoading) && onModelChange && (
-              <div ref={dropdownRef} style={{ position: "relative", minWidth: 0 }}>
+            {!dictationActive && <div style={{ flex: 1, minWidth: 0 }} />}
+
+            {!dictationActive && (contextUsage || onCompact) && (
+              <Popover.Root>
+                <Popover.Trigger
+                  render={(props) => (
+                    <button
+                      {...props}
+                      type="button"
+                      className="composer-ring-button"
+                      aria-label={t("chatInput.contextUsageTitle")}
+                      title={contextUsage && contextUsage.percent != null
+                        ? t("chatInput.contextPercent", { percent: Math.round(contextUsage.percent) })
+                        : t("chatInput.contextUsageTitle")}
+                    >
+                      {(() => {
+                        const percent = contextUsage?.percent ?? null;
+                        const pct = percent == null ? 0 : Math.max(0, Math.min(100, percent));
+                        const R = 8;
+                        const C = 2 * Math.PI * R;
+                        const dash = C * (1 - pct / 100);
+                        const stroke = percent == null
+                          ? "var(--text-dim)"
+                          : percent >= 85 ? "var(--status-warning)" : "var(--accent)";
+                        return (
+                          <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true">
+                            <circle cx="12" cy="12" r={R} fill="none" stroke="var(--bg-selected)" strokeWidth="2.5" />
+                            <circle
+                              cx="12" cy="12" r={R} fill="none" stroke={stroke} strokeWidth="2.5" strokeLinecap="round"
+                              strokeDasharray={C.toFixed(2)} strokeDashoffset={dash.toFixed(2)}
+                              transform="rotate(-90 12 12)"
+                              style={{ transition: "stroke-dashoffset var(--dur-med) var(--ease-out-warm), stroke var(--dur-med) var(--ease-out-warm)" }}
+                            />
+                          </svg>
+                        );
+                      })()}
+                    </button>
+                  )}
+                />
+                <Popover.Portal>
+                  <Popover.Positioner side="top" align="end" sideOffset={8}>
+                    <Popover.Popup className="composer-menu composer-popover">
+                      <Popover.Title className="composer-popover-title">{t("chatInput.contextUsageTitle")}</Popover.Title>
+                      <Popover.Description className="composer-popover-stats">
+                        {contextUsage && contextUsage.tokens != null && contextUsage.contextWindow > 0
+                          ? t("chatInput.contextTokens", {
+                              tokens: formatTokenCount(contextUsage.tokens, locale),
+                              window: formatTokenCount(contextUsage.contextWindow, locale),
+                            })
+                          : t("chatInput.contextEmpty")}
+                        {contextUsage && contextUsage.percent != null && (
+                          <span style={{ display: "block", marginTop: 2, color: "var(--text-muted)" }}>
+                            {t("chatInput.contextPercent", { percent: Math.round(contextUsage.percent) })}
+                          </span>
+                        )}
+                      </Popover.Description>
+                      {onCompact && (
+                        <button
+                          type="button"
+                          className="composer-compact-action"
+                          onClick={isCompacting ? onAbortCompaction : onCompact}
+                          disabled={isStreaming && !isCompacting}
+                          title={isCompacting ? t("chatInput.stopCompaction") : t("chatInput.compactContext")}
+                        >
+                          {isCompacting ? (
+                            <>
+                              <span className="composer-compact-spinner" aria-hidden="true" />
+                              {t("chatInput.compacting")}
+                            </>
+                          ) : (
+                            <>
+                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                                <path d="M4 14h6v6" />
+                                <path d="M20 10h-6V4" />
+                                <path d="M14 10 21 3" />
+                                <path d="M3 21l7-7" />
+                              </svg>
+                              {t("chatInput.compactContext")}
+                            </>
+                          )}
+                        </button>
+                      )}
+                    </Popover.Popup>
+                  </Popover.Positioner>
+                </Popover.Portal>
+              </Popover.Root>
+            )}
+
+            {/* Model selector — text-only, primary tone */}
+            {!dictationActive && (modelOptions.length > 0 || currentName || modelError || showModelsLoading) && onModelChange && (
+              <div ref={dropdownRef} style={{ position: "relative", minWidth: 0, flex: "0 1 auto", maxWidth: 190 }}>
                 <button
                   onClick={(e) => {
                     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
@@ -2287,26 +2458,26 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
                   style={{
                     display: "flex", alignItems: "center", gap: 5,
                     height: 28,
-                    maxWidth: 190,
-                    padding: "0 8px",
+                    maxWidth: "100%",
+                    padding: "0 0 0 8px",
                     overflow: "hidden",
                     background: modelDropdownOpen ? "var(--bg-hover)" : "none",
                     border: "none",
                     borderRadius: 7,
-                    color: "var(--text-muted)",
+                    color: "var(--text)",
                     cursor: modelSelectorDisabled ? "not-allowed" : "pointer",
                     fontSize: 12,
+                    fontFamily: "inherit",
+                    fontWeight: 500,
                     opacity: modelSelectorDisabled ? 0.5 : 1,
-                    transition: "background var(--dur-fast) var(--ease-out-warm), color var(--dur-fast) var(--ease-out-warm)",
+                    transition: "background var(--dur-fast) var(--ease-out-warm)",
                   }}
                   onMouseEnter={(e) => {
-                    if (isStreaming) return;
+                    if (modelSelectorDisabled) return;
                     e.currentTarget.style.background = "var(--bg-hover)";
-                    e.currentTarget.style.color = "var(--text)";
                   }}
                   onMouseLeave={(e) => {
                     e.currentTarget.style.background = modelDropdownOpen ? "var(--bg-hover)" : "none";
-                    e.currentTarget.style.color = "var(--text-muted)";
                   }}
                   title={modelOptions.length > 0
                     ? t("chatInput.changeModel")
@@ -2314,20 +2485,11 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
                   aria-expanded={modelDropdownOpen}
                   aria-haspopup="dialog"
                 >
-                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
-                    <rect x="4" y="4" width="16" height="16" rx="2" />
-                    <rect x="9" y="9" width="6" height="6" />
-                    <line x1="9" y1="1" x2="9" y2="4" /><line x1="15" y1="1" x2="15" y2="4" />
-                    <line x1="9" y1="20" x2="9" y2="23" /><line x1="15" y1="20" x2="15" y2="23" />
-                    <line x1="20" y1="9" x2="23" y2="9" /><line x1="20" y1="14" x2="23" y2="14" />
-                    <line x1="1" y1="9" x2="4" y2="9" /><line x1="1" y1="14" x2="4" y2="14" />
-                  </svg>
                   <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>
                     {currentName ?? (modelOptions.length > 0
                       ? t("chatInput.selectModel")
                       : showModelsLoading ? t("chatInput.loadingModels") : t("chatInput.noModels"))}
                   </span>
-                  <ChevronDown size={12} strokeWidth={1.8} style={{ flexShrink: 0, opacity: 0.7 }} aria-hidden="true" />
                 </button>
                 {modelDropdownOpen && modelDropdownRect && (() => {
                   const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
@@ -2405,32 +2567,27 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
               </div>
             )}
 
-            {/* Thinking selector — compact, expressive, and consistent with models */}
-            {onThinkingLevelChange && (
-              <div ref={thinkingDropdownRef} style={{ position: "relative" }}>
+            {/* Thinking selector — text-only, distinct softer tone */}
+            {!dictationActive && onThinkingLevelChange && (
+              <div ref={thinkingDropdownRef} style={{ position: "relative", flexShrink: 0 }}>
                 <button
                   onClick={() => setThinkingDropdownOpen((v) => !v)}
-                  disabled={isStreaming}
                   title={t("chatInput.changeReasoningTitle", { level: thinkingDisplayLabel })}
                   aria-label={`${t("chatInput.changeReasoning")}: ${thinkingDisplayLabel}`}
                   aria-expanded={thinkingDropdownOpen}
                   aria-haspopup="menu"
                   style={{
                     display: "flex", alignItems: "center", gap: 5,
-                    height: 28, padding: "0 8px", background: thinkingDropdownOpen ? "var(--bg-hover)" : "none",
-                    border: "none", borderRadius: 7, color: "var(--text-muted)", cursor: isStreaming ? "not-allowed" : "pointer",
-                    opacity: isStreaming ? 0.5 : 1, fontSize: 12,
+                    height: 28, padding: "0 8px 0 0", background: thinkingDropdownOpen ? "var(--bg-hover)" : "none",
+                    border: "none", borderRadius: 7, color: "var(--text-muted)", cursor: "pointer",
+                    fontSize: 12,
+                    fontFamily: "inherit", fontWeight: 500,
                     transition: "background var(--dur-fast) var(--ease-out-warm), color var(--dur-fast) var(--ease-out-warm)",
                   }}
-                  onMouseEnter={(e) => { if (!isStreaming) { e.currentTarget.style.background = "var(--bg-hover)"; e.currentTarget.style.color = "var(--text)"; } }}
+                  onMouseEnter={(e) => { e.currentTarget.style.background = "var(--bg-hover)"; e.currentTarget.style.color = "var(--text)"; }}
                   onMouseLeave={(e) => { e.currentTarget.style.background = thinkingDropdownOpen ? "var(--bg-hover)" : "none"; e.currentTarget.style.color = "var(--text-muted)"; }}
                 >
-                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }} aria-hidden="true">
-                    <path d="M9.5 2A5.5 5.5 0 0 0 4 7.5c0 1.7.78 3.21 2 4.21V14a1 1 0 0 0 1 1h5a1 1 0 0 0 1-1v-2.29c1.22-1 2-2.51 2-4.21A5.5 5.5 0 0 0 9.5 2z" />
-                    <line x1="7" y1="18" x2="12" y2="18" /><line x1="8" y1="21" x2="11" y2="21" />
-                  </svg>
                   <span style={{ whiteSpace: "nowrap", textTransform: "capitalize" }}>{thinkingDisplayLabel}</span>
-                  <ChevronDown size={12} strokeWidth={1.8} style={{ flexShrink: 0, opacity: 0.7, transform: thinkingDropdownOpen ? "rotate(180deg)" : "none", transition: "transform var(--dur-fast) var(--ease-out-warm)" }} aria-hidden="true" />
                 </button>
                 {thinkingDropdownOpen && (
                   <div
@@ -2480,157 +2637,66 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
               </div>
             )}
 
-            {/* Fast toggle — only for models that support fast mode. Stays
-                visible while the agent runs (disabled) so it does not look
-                like fast mode was reset; the toggle affects the family tier
-                for the next prompt. */}
-            {fastModeSupported && onFastModeChange && (
-              <button
-                type="button"
-                onClick={() => { if (isStreaming) return; onFastModeChange(!fastModeEnabled); }}
-                disabled={isStreaming}
-                title={fastModeEnabled && fastModeActive === false ? "Fast mode is enabled but inactive for this model" : `Turn OMP Fast mode ${fastModeEnabled ? "off" : "on"} for this model`}
-                aria-pressed={fastModeEnabled}
-                style={{
-                  display: "flex", alignItems: "center", gap: 5,
-                  height: 28,
-                  padding: "0 8px",
-                  background: fastModeEnabled ? "var(--bg-selected)" : "none",
-                  border: "none",
-                  borderRadius: 7,
-                  color: fastModeEnabled && fastModeActive === false ? "var(--status-warning)" : fastModeEnabled ? "var(--accent)" : "var(--text-muted)",
-                  cursor: isStreaming ? "not-allowed" : "pointer",
-                  opacity: isStreaming ? 0.5 : 1,
-                  fontSize: 12,
-                  fontWeight: 600,
-                  transition: "background var(--dur-fast) var(--ease-out-warm), color var(--dur-fast) var(--ease-out-warm)",
+            <div className="composer-dictation-slot" data-active={dictationActive ? "true" : "false"}>
+              <DictationControl
+                key={draftKey ?? cwd ?? "new"}
+                sendLabel={t("chatInput.send")}
+                onPreview={acceptPreview}
+                onTranscript={(text, send) => {
+                  setDictationPreview("");
+                  setValue((current) => current + (current && !/\s$/.test(current) ? " " : "") + text);
+                  if (send) setDictationSubmit(true);
+                  textareaRef.current?.focus();
                 }}
-              >
-                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                  <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
-                </svg>
-                {t("chatInput.fastLabel")}
-              </button>
-            )}
+                onActiveChange={setDictationActive}
+              />
+            </div>
 
-            <div style={{ flex: 1 }} />
-
-            {/* Advisor activity — thunder while the advisor model reviews this run */}
-            {advisorActive && (
-              <span
-                title={t("chatInput.advisorReviewingTitle", {
-                  model: advisorModel?.name ?? t("messageView.advisorLabel"),
-                  reasoning: advisorModel?.reasoning ?? t("chatInput.advisorReasoningDefault"),
-                })}
-                aria-label={t("chatInput.advisorReviewingTitle", {
-                  model: advisorModel?.name ?? t("messageView.advisorLabel"),
-                  reasoning: advisorModel?.reasoning ?? t("chatInput.advisorReasoningDefault"),
-                })}
-                style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 26, height: 26, flexShrink: 0, color: "var(--accent)" }}
-              >
-                <Zap size={14} strokeWidth={2} fill="currentColor" aria-hidden="true" />
-              </span>
-            )}
-
-            {/* Compact context — replaces the context ring (usage lives in the top bar) */}
-            {onCompact && (
-              <button
-                type="button"
-                onClick={isCompacting ? onAbortCompaction : onCompact}
-                disabled={isStreaming && !isCompacting}
-                title={isCompacting ? t("chatInput.stopCompaction") : t("chatInput.compactContext")}
-                aria-label={isCompacting ? t("chatInput.stopCompaction") : t("chatInput.compactContext")}
-                style={{
-                  display: "flex", alignItems: "center", justifyContent: "center",
-                  width: 28, height: 28, padding: 0,
-                  background: "none", border: "none",
-                  borderRadius: 7,
-                  color: isCompacting ? "var(--accent)" : "var(--text-muted)",
-                  cursor: isStreaming && !isCompacting ? "not-allowed" : "pointer",
-                  opacity: isStreaming && !isCompacting ? 0.5 : 1,
-                  transition: "background var(--dur-fast) var(--ease-out-warm), color var(--dur-fast) var(--ease-out-warm)",
-                }}
-                onMouseEnter={(e) => { if (!(isStreaming && !isCompacting)) e.currentTarget.style.background = "var(--bg-hover)"; }}
-                onMouseLeave={(e) => { e.currentTarget.style.background = "none"; }}
-              >
-                <Shrink size={14} strokeWidth={1.8} aria-hidden="true" />
-              </button>
-            )}
-
-            {/* Primary action: Send (idle) / Queue (typed while running) / Stop (running) */}
-            {primaryActionQueuesMessage ? (
-              <button
-                type="button"
-                onClick={() => sendQueued("followup")}
-                title={t("chatInput.queueMessage")}
-                style={{
-                  display: "flex", alignItems: "center", gap: 6,
-                  height: 28,
-                  padding: "0 14px",
-                  background: "var(--accent-strong)",
-                  border: "none",
-                  borderRadius: 8,
-                  color: "var(--on-accent)",
-                  cursor: "pointer",
-                  fontSize: 12,
-                  fontWeight: 600,
-                  transition: "background var(--dur-fast) var(--ease-out-warm)",
-                }}
-              >
-                <ListChecks size={13} strokeWidth={2} aria-hidden="true" />
-                {t("chatInput.queue")}
-              </button>
-            ) : isStreaming ? (
-              <button
-                type="button"
-                onClick={isCompacting ? onAbortCompaction : onAbort}
-                title={t("chatInput.stopAgent")}
-                style={{
-                  display: "flex", alignItems: "center", gap: 6,
-                  height: 28,
-                  padding: "0 14px",
-                  background: "var(--accent-strong)",
-                  border: "none",
-                  borderRadius: 8,
-                  color: "var(--on-accent)",
-                  cursor: "pointer",
-                  fontSize: 12,
-                  fontWeight: 600,
-                  transition: "background var(--dur-fast) var(--ease-out-warm)",
-                }}
-              >
-                <svg width="9" height="9" viewBox="0 0 10 10" fill="none" aria-hidden="true">
-                  <rect x="1.5" y="1.5" width="7" height="7" rx="1.5" fill="currentColor" />
-                </svg>
-                {t("chatInput.stop")}
-              </button>
+            {/* Primary action: round up-arrow Send (idle) / Send (typed or attached while
+                running — stop+send) / Stop (running while empty). Stable
+                far-right position. */}
+            {!dictationActive && (submitting ? <button type="button" className="composer-send" disabled aria-label="Sending message" title="Sending message"><span className="composer-compact-spinner" aria-hidden="true" /></button> : isStreaming ? (
+              value.trim() || attachedImages.length || attachedTextFiles.length ? (
+                <button
+                  type="button"
+                  onClick={handleSend}
+                  className="composer-send"
+                  aria-label={t("chatInput.send")}
+                  title={t("chatInput.steerNowTitle")}
+                >
+                  <svg width="13" height="13" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <line x1="7" y1="12" x2="7" y2="3" />
+                    <polyline points="2.5 7.5 7 3 11.5 7.5" />
+                  </svg>
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={isCompacting ? onAbortCompaction : onAbort}
+                  className="composer-send"
+                  aria-label={t("chatInput.stopAgent")}
+                  title={t("chatInput.stopAgent")}
+                >
+                  <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
+                    <rect x="1" y="1" width="8" height="8" rx="1.6" fill="currentColor" />
+                  </svg>
+                </button>
+              )
             ) : (
               <button
                 type="button"
                 onClick={handleSend}
                 disabled={!value.trim() && !attachedImages.length && !attachedTextFiles.length}
-                style={{
-                  display: "flex", alignItems: "center", gap: 6,
-                  height: 28,
-                  padding: "0 14px",
-                  background: (value.trim() || attachedImages.length || attachedTextFiles.length) ? "var(--accent-strong)" : "var(--bg-panel)",
-                  border: "none",
-                  borderRadius: 8,
-                  color: (value.trim() || attachedImages.length || attachedTextFiles.length) ? "var(--on-accent)" : "var(--text-dim)",
-                  cursor: (value.trim() || attachedImages.length || attachedTextFiles.length) ? "pointer" : "not-allowed",
-                  fontSize: 12,
-                  fontWeight: 600,
-                  boxShadow: (value.trim() || attachedImages.length || attachedTextFiles.length) ? "var(--shadow-card)" : "none",
-                  transition: "background var(--dur-fast) var(--ease-out-warm), box-shadow var(--dur-fast) var(--ease-out-warm)",
-                }}
+                className="composer-send"
+                aria-label={t("chatInput.send")}
+                title={t("chatInput.send")}
               >
-                <svg width="12" height="12" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <line x1="2" y1="7" x2="11" y2="7" />
-                  <polyline points="7.5 3 12 7 7.5 11" />
+                <svg width="13" height="13" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <line x1="7" y1="12" x2="7" y2="3" />
+                  <polyline points="2.5 7.5 7 3 11.5 7.5" />
                 </svg>
-                {t("chatInput.send")}
               </button>
-            )}
+            ))}
           </div>
           </div>
         </div>

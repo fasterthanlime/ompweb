@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { closeSync, openSync, readFileSync, readdirSync, readSync, statSync } from "fs";
 import * as fsRuntime from "fs";
 import { dirname, join } from "path";
+import type { SessionContext, SessionEntry, SessionHeader, SessionPagination, SessionTreeNode } from "@/lib/types";
 import {
   buildSessionTree,
   deleteSessionFileWithArtifacts,
@@ -19,6 +20,8 @@ import {
   invalidateSessionPathCache,
   invalidateSessionListCache,
   buildSessionContext,
+  buildSessionContextPage,
+  getSessionEntries,
   readSessionHeader,
 } from "@/lib/session-reader";
 import { apiErrorResponse, resolveSessionPathOr404 } from "@/lib/api-utils";
@@ -146,6 +149,35 @@ function projectTreeForResponse<T extends { entry: { id: string }; children: T[]
   return projectedRoots;
 }
 
+/** Remove message bodies from the navigation tree on the paged history path.
+ * Branch previews and compressed ids are already projected above, so the
+ * navigator only needs entry identity/parent metadata and label fields. */
+function minimizeTreeForPagedResponse<T extends { entry: { type?: string; id: string; parentId?: string | null; timestamp?: string }; children: T[] }>(nodes: T[]): T[] {
+  return nodes.map((node) => {
+    const entry = node.entry;
+    const minimalEntry: Record<string, unknown> = {
+      type: entry.type,
+      id: entry.id,
+      parentId: entry.parentId ?? null,
+      timestamp: entry.timestamp,
+    };
+    if (entry.type === "label") {
+      const source = entry as typeof entry & { targetId?: string; label?: string };
+      if (source.targetId !== undefined) minimalEntry.targetId = source.targetId;
+      if (source.label !== undefined) minimalEntry.label = source.label;
+    } else if (entry.type === "custom_message") {
+      const source = entry as typeof entry & { customType?: string; display?: boolean };
+      if (source.customType !== undefined) minimalEntry.customType = source.customType;
+      if (source.display !== undefined) minimalEntry.display = source.display;
+    }
+    return {
+      ...node,
+      entry: minimalEntry as T["entry"],
+      children: minimizeTreeForPagedResponse(node.children),
+    };
+  });
+}
+
 export async function GET(
   req: Request,
   { params }: { params: Promise<{ id: string }> }
@@ -160,29 +192,86 @@ export async function GET(
     const deferThinking = searchParams.has("deferThinking");
     const deferToolResultImages = searchParams.has("deferMedia");
     const includeState = searchParams.has("includeState");
+    const paged = searchParams.has("limit") || searchParams.has("before");
 
-    const { header, entries, error: loadError } = loadSessionFile(filePath, {
-      resolveBlobs: true,
-      skipToolResultImages: deferToolResultImages,
-    });
-    if (loadError === "too_large") {
-      return NextResponse.json(
-        { error: "Session file is too large to open in omp-web", code: "session_file_too_large" },
-        { status: 413 },
-      );
+    let header: SessionHeader | null = null;
+    let entries: SessionEntry[] = [];
+    let leafId: string | null = null;
+    let tree: SessionTreeNode[] = [];
+    let context: SessionContext = { messages: [], entryIds: [], thinkingLevel: "off", model: null, todoPhases: [] };
+    let pagination: SessionPagination | undefined;
+    let pageTotalMessages: number | undefined;
+    let pageFirstMessage: string | undefined;
+    if (paged) {
+      if (statSync(filePath).size > MAX_SESSION_LOAD_BYTES) {
+        return NextResponse.json({ error: "Session file is too large to open", code: "session_file_too_large" }, { status: 413 });
+      }
+      // Paged reads deliberately use the unresolved parse cache. Only the
+      // selected page is cloned, blob-resolved, and converted below.
+      header = readSessionHeader(filePath);
+      entries = getSessionEntries(filePath);
+      if (!header) {
+        return NextResponse.json({ error: "Session file is missing or malformed", code: "session_file_malformed" }, { status: 404 });
+      }
+      const limitRaw = searchParams.get("limit");
+      const limit = limitRaw === null ? 100 : Number(limitRaw);
+      if (!Number.isInteger(limit) || limit < 20 || limit > 200) {
+        return NextResponse.json({ error: "limit must be an integer between 20 and 200", code: "invalid_session_page_limit" }, { status: 400 });
+      }
+      const requestedLeafId = searchParams.has("leafId") ? searchParams.get("leafId") : undefined;
+      const before = searchParams.has("before") ? searchParams.get("before") : undefined;
+      let page;
+      try {
+        page = buildSessionContextPage(entries, requestedLeafId, before, limit, { deferThinking, deferToolResultImages });
+      } catch (error) {
+        if (error instanceof Error && error.message === "Invalid session page cursor") {
+          return NextResponse.json({ error: "Unknown session page cursor", code: "invalid_session_page_cursor" }, { status: 400 });
+        }
+        throw error;
+      }
+      leafId = page.leafId;
+      context = page.context;
+      pagination = page.pagination;
+      pageTotalMessages = page.totalMessages;
+      pageFirstMessage = page.firstMessage;
+      // Build navigation from unresolved entries, then strip message bodies
+      // from the response. This retains complete branch topology without
+      // serializing historical payloads.
+      tree = minimizeTreeForPagedResponse(projectTreeForResponse(buildSessionTree(entries)));
+    } else {
+      const loaded = loadSessionFile(filePath, {
+        resolveBlobs: true,
+        skipToolResultImages: deferToolResultImages,
+      });
+      if (loaded.error === "too_large") {
+        return NextResponse.json(
+          { error: "Session file is too large to open in omp-web", code: "session_file_too_large" },
+          { status: 413 },
+        );
+      }
+      header = loaded.header;
+      entries = loaded.entries;
+      if (!header) {
+        return NextResponse.json({ error: "Session file is missing or malformed", code: "session_file_malformed" }, { status: 404 });
+      }
+      leafId = getLeafEntryId(entries);
+      tree = projectTreeForResponse(buildSessionTree(entries));
+      context = buildSessionContext(entries, leafId, { deferThinking, deferToolResultImages });
     }
     if (!header) {
       return NextResponse.json({ error: "Session file is missing or malformed", code: "session_file_malformed" }, { status: 404 });
     }
-    const leafId = getLeafEntryId(entries);
-    const tree = projectTreeForResponse(buildSessionTree(entries));
-    const context = buildSessionContext(entries, leafId, { deferThinking, deferToolResultImages });
-
     let modified = header.timestamp ?? new Date().toISOString();
     try { modified = statSync(filePath).mtime.toISOString(); } catch { /* use header timestamp */ }
     const parentSessionId = header.parentSession
       ? await resolveParentSessionId(header.parentSession)
       : undefined;
+    const firstMessage = pageFirstMessage ?? (() => {
+      const msg = context.messages.find((m) => m.role === "user");
+      if (!msg) return "(no messages)";
+      const c = (msg as { content: unknown }).content;
+      return typeof c === "string" ? c : (Array.isArray(c) ? (c.find((b: { type: string }) => b.type === "text") as { text: string } | undefined)?.text ?? "" : "") || "(no messages)";
+    })();
     const info = {
       path: filePath,
       id: header.id,
@@ -190,14 +279,8 @@ export async function GET(
       name: header.title,
       created: header.timestamp,
       modified,
-      messageCount: context.messages.length,
-      firstMessage: context.messages.find((m) => m.role === "user")
-        ? (() => {
-            const msg = context.messages.find((m) => m.role === "user")!;
-            const c = (msg as { content: unknown }).content;
-            return typeof c === "string" ? c : (Array.isArray(c) ? (c.find((b: { type: string }) => b.type === "text") as { text: string } | undefined)?.text ?? "" : "") || "(no messages)";
-          })()
-        : "(no messages)",
+      messageCount: pageTotalMessages ?? context.messages.length,
+      firstMessage,
       parentSessionId,
     };
 
@@ -226,6 +309,7 @@ export async function GET(
       leafId,
       tree,
       context,
+      ...(pagination ? { pagination } : {}),
       ...(agent ? { agent } : {}),
     });
   } catch (error) {

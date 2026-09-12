@@ -201,6 +201,8 @@ export function MetadataRow({
 
 export function ArchiveBrowser({ open, onClose, onRestored }: ArchiveBrowserProps) {
   const { t, locale } = useI18n();
+  const [remoteArchives, setRemoteArchives] = useState<Array<{id:string;name:string;targetId:string;cwd:string;archivedAt:string}>>([]);
+  const [remoteRestoring, setRemoteRestoring] = useState<string | null>(null);
   const [archives, setArchives] = useState<ArchivedSessionInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -223,9 +225,10 @@ export function ArchiveBrowser({ open, onClose, onRestored }: ArchiveBrowserProp
         const payload = await res.json().catch(() => ({})) as { error?: string; code?: string };
         throw new Error(formatApiError(payload, `errors.http${res.status}`));
       }
-      const data = (await res.json()) as { archives?: ArchivedSessionInfo[] };
+      const data = (await res.json()) as { archives?: ArchivedSessionInfo[]; remoteArchives?: typeof remoteArchives };
       const items = Array.isArray(data.archives) ? data.archives : [];
       setArchives(items);
+      setRemoteArchives(data.remoteArchives ?? []);
       setSelectedKey((prevKey) => {
         if (prevKey && items.some((item) => item.key === prevKey)) return prevKey;
         return items.length > 0 ? items[0].key : null;
@@ -648,7 +651,8 @@ export function ArchiveBrowser({ open, onClose, onRestored }: ArchiveBrowserProp
                     gap: 4,
                   }}
                 >
-                  {filteredArchives.length === 0 ? (
+                  {remoteArchives.filter(item => `${item.name} ${item.cwd} ${item.targetId}`.toLowerCase().includes(searchQuery.toLowerCase())).map(item => <div key={item.id} style={{padding:12,borderBottom:"1px solid var(--border)",display:"flex",gap:8,alignItems:"center"}}><div style={{flex:1,minWidth:0}}><strong>{item.name}</strong><div style={{fontSize:11,color:"var(--text-muted)"}}>{item.targetId} · archived remote thread</div></div><button type="button" disabled={remoteRestoring!==null} onClick={async()=>{setRemoteRestoring(item.id);try{const response=await fetch("/api/sessions/archive",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({remoteId:item.id})});if(!response.ok)throw new Error("Remote restore failed");window.dispatchEvent(new CustomEvent("nook:remote-thread-restored",{detail:{id:item.id,targetId:item.targetId}}));setRemoteArchives(items=>items.filter(archive=>archive.id!==item.id));onClose();}catch(error){toast.error(String(error));}finally{setRemoteRestoring(null);}}}>{remoteRestoring===item.id?"Restoring…":"Restore"}</button></div>)}
+                  {filteredArchives.length === 0 && remoteArchives.length === 0 ? (
                     <div
                       style={{
                         padding: "32px 16px",

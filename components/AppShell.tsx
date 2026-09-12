@@ -8,10 +8,12 @@ import { SessionSidebar } from "./SessionSidebar";
 import { ToastProvider } from "./ui/toast";
 import { toast } from "./ui/toast";
 import { ChatWindow } from "./ChatWindow";
+import { VisualFrames } from "./VisualFrames";
 import { TabBar, type Tab } from "./TabBar";
 import { BranchNavigator } from "./BranchNavigator";
 import { LanguageSwitcher } from "./LanguageSwitcher";
-import { Check, CircleCheck, History, Menu, Moon, PanelLeft, Sun, Terminal, Wand2 } from "lucide-react";
+import { Check, History, Menu as MenuIcon, Moon, PanelLeft, Sun, Terminal, Wand2, MoreHorizontal } from "lucide-react";
+import { Menu as ToolbarMenu } from "@base-ui/react/menu";
 import { useTheme } from "@/hooks/useTheme";
 import { formatCompactNumber, formatPercent, getCacheHitRate } from "@/lib/format";
 import { translate, useI18n } from "@/lib/i18n";
@@ -23,9 +25,12 @@ import { buildAtMentionText, buildFileAtMentionsText, buildFileLineMentionText }
 import { getInitialNavigation } from "@/lib/initial-navigation";
 import { comparableProjectPath } from "@/lib/comparable-path";
 import { showCompletionNotification } from "@/lib/browser-notifications";
+import { RemoteChat } from "./RemoteWorkspace";
+import { RemoteWorkspaceList, type RemoteTargetSummary, type RemoteThreadSummary } from "./RemoteWorkspaceList";
 import type { SessionInfo, SessionTreeNode } from "@/lib/types";
 import type { ChatInputHandle } from "./ChatInput";
 import type { SessionStatsInfo, GenerationSpeedInfo } from "@/lib/pi-types";
+import type { RemoteControls } from "@/lib/remote-controls";
 import type { SettingsTab } from "./SettingsTabs";
 import { SettingsConfig } from "./SettingsConfig";
 import { ArchiveBrowser } from "./ArchiveBrowser";
@@ -58,6 +63,57 @@ function loadSidebarWidth(): number {
     return SIDEBAR_DEFAULT_WIDTH;
   }
 }
+
+// Mobile edge-swipe to open the drawer sidebar: a touch that starts within
+// EDGE_SWIPE_ZONE_PX of the left edge (past any safe-area inset), travels right
+// by at least EDGE_SWIPE_MIN_DX, and is more horizontal than vertical (by
+// EDGE_SWIPE_DIRECTION_RATIO) opens the drawer. Handled with passive touch
+// listeners that never preventDefault or touch pointer events, so browser
+// scrolling/clicking is never captured.
+const EDGE_SWIPE_ZONE_PX = 28;
+const EDGE_SWIPE_MIN_DX = 64;
+const EDGE_SWIPE_DIRECTION_RATIO = 1.2;
+
+// env(safe-area-inset-left) resolves per viewport, not per element; probe it
+// with a throwaway element so the gesture zone starts where content actually
+// begins (notches / rounded-corner phones) without hardcoding device values.
+function edgeSwipeSafeAreaLeft(): number {
+  const probe = document.createElement("div");
+  probe.style.cssText =
+    "position:fixed;top:0;left:0;visibility:hidden;pointer-events:none;padding-left:env(safe-area-inset-left)";
+  document.body.appendChild(probe);
+  const inset = Number.parseFloat(getComputedStyle(probe).paddingLeft) || 0;
+  probe.remove();
+  return inset;
+}
+
+// Returns true when the touch target sits inside content that owns horizontal
+// gestures — an actually horizontally scrollable region or a node whose
+// touch-action routes horizontal panning to script (pointer events). Both
+// would fight the edge-swipe opener, so those touches are left alone.
+function edgeSwipeTargetOwnsHorizontal(target: EventTarget | null): boolean {
+  let el = target instanceof Element ? target : null;
+  while (el && el !== document.documentElement) {
+    const style = getComputedStyle(el);
+    const touchAction = style.touchAction;
+    if (
+      touchAction &&
+      touchAction !== "auto" &&
+      touchAction !== "manipulation" &&
+      !touchAction.split(/\s+/).includes("pan-x")
+    ) {
+      return true;
+    }
+    if (
+      (style.overflowX === "auto" || style.overflowX === "scroll") &&
+      el.scrollWidth > el.clientWidth + 1
+    ) {
+      return true;
+    }
+    el = el.parentElement;
+  }
+  return false;
+}
 const CommandPalette = dynamic(() => import("./CommandPalette").then((m) => m.CommandPalette), {
   ssr: false,
 });
@@ -82,11 +138,49 @@ type AutoNameStatus =
 export function AppShell() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const [initialNavigation] = useState(() => getInitialNavigation(searchParams));
+  const [initialNavigation, setInitialNavigation] = useState(() => getInitialNavigation(searchParams));
   const { isDark, preference, toggleTheme } = useTheme();
-  const { t, locale } = useI18n();
+  const { t, locale, setLocale } = useI18n();
   const isMobile = useIsMobile();
   const [selectedSession, setSelectedSession] = useState<SessionInfo | null>(null);
+  const [remoteSelection, setRemoteSelection] = useState<{targetId:string;sessionId:string|null}|null>(() => {
+    const targetId = searchParams.get("remoteTarget");
+    return targetId ? { targetId, sessionId: searchParams.get("remoteSession") } : null;
+  });
+  const [remoteConnection, setRemoteConnection] = useState<"connecting" | "connected" | "reconnecting" | "disconnected">("connecting");
+  const [remoteRefresh, setRemoteRefresh] = useState(0);
+  useEffect(() => {
+    const archived = (event: Event) => { const id = (event as CustomEvent<{id:string}>).detail.id; setRemoteRefresh(value=>value+1); if(remoteSelection?.sessionId===id){setRemoteSelection(null);router.replace("/",{scroll:false});} };
+    const restored = (event: Event) => { const {id,targetId}=(event as CustomEvent<{id:string;targetId:string}>).detail;setRemoteRefresh(value=>value+1);setRemoteSelection({targetId,sessionId:id});router.replace(`?remoteTarget=${encodeURIComponent(targetId)}&remoteSession=${encodeURIComponent(id)}`,{scroll:false}); };
+    window.addEventListener("nook:remote-thread-archived",archived);window.addEventListener("nook:remote-thread-restored",restored);
+    return ()=>{window.removeEventListener("nook:remote-thread-archived",archived);window.removeEventListener("nook:remote-thread-restored",restored);};
+  },[remoteSelection?.sessionId,router]);
+  const [remoteThreads, setRemoteThreads] = useState<RemoteThreadSummary[]>([]);
+  const [remoteTargets, setRemoteTargets] = useState<RemoteTargetSummary[]>([]);
+  const lastThreadRestoredRef = useRef(false);
+  const [threadRestoreReady, setThreadRestoreReady] = useState(false);
+  useEffect(() => {
+    if (lastThreadRestoredRef.current) return;
+    lastThreadRestoredRef.current = true;
+    setThreadRestoreReady(true);
+    if (searchParams.has("session") || searchParams.has("remoteTarget") || searchParams.has("cwd")) return;
+    try {
+      const saved = JSON.parse(localStorage.getItem("nook:last-thread") ?? "null");
+      if (saved?.kind === "remote" && typeof saved.targetId === "string" && typeof saved.sessionId === "string") {
+        setRemoteSelection({ targetId: saved.targetId, sessionId: saved.sessionId });
+        router.replace(`?remoteTarget=${encodeURIComponent(saved.targetId)}&remoteSession=${encodeURIComponent(saved.sessionId)}`, { scroll: false });
+      } else if (saved?.kind === "local" && typeof saved.sessionId === "string") {
+        setInitialNavigation({ requestedCwd: null, sessionId: saved.sessionId });
+        router.replace(`?session=${encodeURIComponent(saved.sessionId)}`, { scroll: false });
+      }
+    } catch { /* Unavailable or malformed storage must not prevent opening Nook. */ }
+  }, [router, searchParams]);
+  useEffect(() => {
+    const selection = remoteSelection?.sessionId
+      ? { kind: "remote", ...remoteSelection }
+      : !remoteSelection && selectedSession?.id ? { kind: "local", sessionId: selectedSession.id } : null;
+    if (selection) { try { localStorage.setItem("nook:last-thread", JSON.stringify(selection)); } catch {} }
+  }, [remoteSelection, selectedSession?.id]);
   // When user clicks +, we only store the cwd — no fake session id
   const [newSessionCwd, setNewSessionCwd] = useState<string | null>(null);
   const [initialCwdStatus, setInitialCwdStatus] = useState<"idle" | "validating" | "ready" | "error">(
@@ -234,6 +328,13 @@ export function AppShell() {
   const handleModelCapacityChange = useCallback((capacity: { contextWindow?: number; maxTokens?: number } | null) => {
     setModelCapacity(capacity);
   }, []);
+  const handleRemoteControlsChange = useCallback((controls: RemoteControls | null) => {
+    setSessionStats(controls?.sessionStats ?? null);
+    setContextUsage(controls?.contextUsage ?? null);
+    setModelCapacity(controls?.model ? { contextWindow: controls.model.contextWindow, maxTokens: controls.model.maxTokens } : null);
+    setSystemPrompt(controls?.systemPrompt ?? null);
+    setGenerationSpeed(controls ? { current: controls.tokensPerSecond, average: null } : null);
+  }, []);
 
   // Single active panel — only one dropdown open at a time
   const [activeTopPanel, setActiveTopPanel] = useState<"branches" | "system" | "session" | null>(null);
@@ -273,6 +374,87 @@ export function AppShell() {
     if (isMobile) setActiveTopPanel(null);
     setSidebarOpen((open) => !open);
   }, [isMobile]);
+
+  const openSidebarDrawer = useCallback(() => {
+    if (isMobile) setActiveTopPanel(null);
+    setSidebarOpen(true);
+  }, [isMobile]);
+
+  // Latest drawer state for the passive touch handlers below, so they never
+  // need rebinding when the drawer opens/closes.
+  const sidebarOpenRef = useRef(sidebarOpen);
+  useEffect(() => {
+    sidebarOpenRef.current = sidebarOpen;
+  }, [sidebarOpen]);
+
+  // Mobile only: open the drawer sidebar by swiping right from the left edge.
+  // Passive touch observers only — no pointer events, no preventDefault — so
+  // the browser keeps owning scroll/tap handling and nothing ever captures
+  // the pointer. A gesture counts only if it starts inside the left-edge zone
+  // (past any safe-area inset), moves right past EDGE_SWIPE_MIN_DX, and stays
+  // more horizontal than vertical, so scrolls, taps, and mid-screen drags
+  // are ignored. Touches over nested horizontal content (scrollable regions
+  // or script-owned horizontal gestures) are left alone. Cleanup detaches all
+  // listeners on unmount and on breakpoint change.
+  useEffect(() => {
+    if (!isMobile) return;
+    let activeTouchId: number | null = null;
+    let startX = 0;
+    let startY = 0;
+    let startTarget: Element | null = null;
+    let suppressClick: ((ev: MouseEvent) => void) | null = null;
+
+    const onTouchStart = (e: TouchEvent) => {
+      if (sidebarOpenRef.current || activeTouchId !== null || e.touches.length !== 1) return;
+      const touch = e.touches[0];
+      const inset = edgeSwipeSafeAreaLeft();
+      // Not a left-edge touch (or inside the unsafe notch area) → not ours.
+      if (touch.clientX < inset || touch.clientX > inset + EDGE_SWIPE_ZONE_PX) return;
+      if (edgeSwipeTargetOwnsHorizontal(e.target)) return;
+      activeTouchId = touch.identifier;
+      startX = touch.clientX;
+      startY = touch.clientY;
+      startTarget = e.target instanceof Element ? e.target : null;
+    };
+
+    const onTouchEnd = (e: TouchEvent) => {
+      if (activeTouchId === null) return;
+      const touch = Array.from(e.changedTouches).find((t) => t.identifier === activeTouchId);
+      activeTouchId = null;
+      if (!touch || sidebarOpenRef.current) return;
+      const dx = touch.clientX - startX;
+      const dy = Math.abs(touch.clientY - startY);
+      // Too short (tap) or dominated by vertical travel (scroll) → ignore.
+      if (dx < EDGE_SWIPE_MIN_DX || dx <= dy * EDGE_SWIPE_DIRECTION_RATIO) return;
+      // The swipe was finger-led; if it began on a control inside the edge
+      // zone (e.g. the menu button), some browsers still fire its click after
+      // touchend. Suppress exactly that click so the drawer stays open.
+      const target = startTarget;
+      suppressClick = (ev: MouseEvent) => {
+        const el = ev.target instanceof Element ? ev.target : null;
+        if (target && el && target.contains(el)) {
+          ev.stopPropagation();
+          ev.preventDefault();
+        }
+      };
+      window.addEventListener("click", suppressClick, { capture: true, once: true });
+      openSidebarDrawer();
+    };
+
+    const onTouchCancel = () => {
+      activeTouchId = null;
+    };
+
+    window.addEventListener("touchstart", onTouchStart, { passive: true });
+    window.addEventListener("touchend", onTouchEnd, { passive: true });
+    window.addEventListener("touchcancel", onTouchCancel, { passive: true });
+    return () => {
+      window.removeEventListener("touchstart", onTouchStart);
+      window.removeEventListener("touchend", onTouchEnd);
+      window.removeEventListener("touchcancel", onTouchCancel);
+      if (suppressClick) window.removeEventListener("click", suppressClick, { capture: true });
+    };
+  }, [isMobile, openSidebarDrawer]);
 
   const resetSidebarWidth = useCallback(() => {
     setSidebarWidth(SIDEBAR_DEFAULT_WIDTH);
@@ -443,6 +625,7 @@ export function AppShell() {
     setActiveCwd(cwd);
     // Skip if cwd is null (initial mount) or during the initial URL restore.
     if (!cwd) return;
+    if (!selectedSession && (initialSessionId || remoteSelection)) return;
     if (suppressCwdBumpRef.current) {
       suppressCwdBumpRef.current = false;
       return;
@@ -472,9 +655,10 @@ export function AppShell() {
     setSystemPromptLoading(false);
     setActiveTopPanel(null);
     router.replace("/", { scroll: false });
-  }, [router, selectedSession]);
+  }, [router, selectedSession, initialSessionId, remoteSelection]);
 
   const handleSelectSession = useCallback((session: SessionInfo, isRestore = false) => {
+    if (!isRestore) setRemoteSelection(null);
     setNewSessionCwd(null);
     setSelectedSession(session);
     setSessionKey((k) => k + 1);
@@ -496,6 +680,7 @@ export function AppShell() {
   }, [router, isMobile]);
 
   const handleNewSession = useCallback((_sessionId: string, cwd: string) => {
+    setRemoteSelection(null);
     setSelectedSession(null);
     setNewSessionCwd(cwd);
     setSessionKey((k) => k + 1);
@@ -713,7 +898,8 @@ export function AppShell() {
   const showPlaceholder = initialSessionRestored && !showChat;
 
   const activeCwdName = activeCwd ? getFileName(activeCwd) || activeCwd : null;
-  const windowTitle = activeCwdName ? `${activeCwdName} - omp web` : "omp web";
+  const titleThreadName = remoteSelection ? remoteThreads.find(thread => thread.id === remoteSelection.sessionId)?.name : selectedSession?.name;
+  const windowTitle = titleThreadName && titleThreadName !== "Nook" ? `${titleThreadName} — Nook` : "Nook";
 
   useEffect(() => {
     const syncWindowTitle = () => {
@@ -734,12 +920,35 @@ export function AppShell() {
         currentModel={null}
       />
       <SessionSidebar
-        selectedSessionId={selectedSession?.id ?? null}
+        remoteActive={!!remoteSelection}
+        remoteThreads={remoteThreads}
+        selectedRemoteSessionId={remoteSelection?.sessionId}
+        onRemoteThreadRenamed={() => setRemoteRefresh(value => value + 1)}
+        onSelectRemoteSession={(targetId, sessionId) => {
+          setRemoteSelection({ targetId, sessionId });
+          setActiveTopPanel(null);
+          if (isMobile) setSidebarOpen(false);
+          router.replace(`?remoteTarget=${encodeURIComponent(targetId)}&remoteSession=${encodeURIComponent(sessionId)}`, { scroll: false });
+        }}
+        remoteTargets={remoteTargets}
+        onNewRemoteSession={(targetId) => {
+          setRemoteSelection({ targetId, sessionId: null });
+          setActiveTopPanel(null);
+          if (isMobile) setSidebarOpen(false);
+          router.replace(`?remoteTarget=${encodeURIComponent(targetId)}`, { scroll: false });
+        }}
+        remoteWorkspaces={<RemoteWorkspaceList selected={remoteSelection} refreshKey={remoteRefresh} renderRows={false} onTargetsChange={setRemoteTargets} onThreadsChange={setRemoteThreads} onSelect={(targetId, sessionId) => {
+          setRemoteSelection({ targetId, sessionId });
+          setActiveTopPanel(null);
+          if (isMobile) setSidebarOpen(false);
+          router.replace(`?remoteTarget=${encodeURIComponent(targetId)}${sessionId ? `&remoteSession=${encodeURIComponent(sessionId)}` : ""}`, { scroll: false });
+        }} />}
+        selectedSessionId={remoteSelection ? null : selectedSession?.id ?? null}
         optimisticSession={selectedSession?.path === "" ? selectedSession : null}
         onSelectSession={handleSelectSession}
         onNewSession={handleNewSession}
         initialSessionId={initialSessionId}
-        skipInitialProjectSelection={initialNavigation.requestedCwd !== null}
+        skipInitialProjectSelection={!threadRestoreReady || initialNavigation.requestedCwd !== null || !!remoteSelection}
         onInitialRestoreDone={handleInitialRestoreDone}
         refreshKey={refreshKey}
         onSessionDeleted={handleSessionDeleted}
@@ -888,18 +1097,19 @@ export function AppShell() {
       {/* Center: chat */}
       <main style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minWidth: 0 }}>
         {/* Top bar: compact icon-led control bar */}
-        <div ref={topBarRef} className="shell-topbar" style={{ display: "flex", alignItems: "center", flexShrink: 0, borderBottom: "1px solid var(--border)", height: isMobile ? 44 : 36, background: "var(--bg-panel)" }}>
+        <div ref={topBarRef} className="shell-topbar" style={{ display: "flex", alignItems: "center", flexShrink: 0, minWidth: 0, overflow: "hidden", borderBottom: "1px solid var(--border)", height: isMobile ? 44 : 36, background: "var(--bg-panel)" }}>
         {/* Utility group: sidebar, theme, language */}
-        <div style={{ display: "flex", alignItems: "center", gap: 4, height: "100%", paddingLeft: isMobile ? 4 : 8 }}>
+        <div className="shell-toolbar-utility" style={{ display: "flex", alignItems: "center", gap: 4, height: "100%", paddingLeft: isMobile ? 4 : 8 }}>
           <button
             onClick={handleSidebarToggle}
             title={sidebarOpen ? t("appShell.hideSidebar") : t("appShell.showSidebar")}
             aria-label={sidebarOpen ? t("appShell.hideSidebar") : t("appShell.showSidebar")}
             className="shell-toolbar-btn ui-focus-ring"
           >
-            {sidebarOpen ? <PanelLeft size={16} strokeWidth={1.8} aria-hidden="true" /> : <Menu size={16} strokeWidth={1.8} aria-hidden="true" />}
+            {sidebarOpen ? <PanelLeft size={16} strokeWidth={1.8} aria-hidden="true" /> : <MenuIcon size={16} strokeWidth={1.8} aria-hidden="true" />}
           </button>
           <button
+            className="shell-toolbar-theme"
             onClick={(e) => {
               const rect = e.currentTarget.getBoundingClientRect();
               toggleTheme({ x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 });
@@ -907,17 +1117,75 @@ export function AppShell() {
             title={preference === "system" ? t("appShell.systemTheme") : (isDark ? t("appShell.switchToSystemTheme") : t("appShell.switchToDarkMode"))}
             aria-label={preference === "system" ? t("appShell.systemTheme") : (isDark ? t("appShell.switchToSystemTheme") : t("appShell.switchToDarkMode"))}
             aria-pressed={isDark}
-            className="shell-toolbar-btn ui-focus-ring"
           >
             {isDark ? <Sun size={16} strokeWidth={1.8} aria-hidden="true" /> : <Moon size={16} strokeWidth={1.8} aria-hidden="true" />}
           </button>
-          <LanguageSwitcher />
+          <span className="shell-toolbar-language"><LanguageSwitcher /></span>
         </div>
-        {showChat && (
+        {(showChat || remoteSelection) && (
+          <div className="shell-mobile-thread-identity" title={remoteSelection ? remoteThreads.find(thread => thread.id === remoteSelection.sessionId)?.name ?? "New thread" : selectedSession?.name ?? activeCwdName ?? "Nook"}>
+            {remoteSelection ? remoteThreads.find(thread => thread.id === remoteSelection.sessionId)?.name ?? "New thread" : selectedSession?.name ?? activeCwdName ?? "Nook"}
+          </div>
+        )}
+        {remoteSelection && <span role="status" title={`Remote ${remoteConnection}`} style={{display:"inline-flex",alignItems:"center",gap:5,fontSize:11,color:remoteConnection === "connected" ? "var(--text-muted)" : "var(--status-warning)",whiteSpace:"nowrap",padding:"0 6px"}}><span aria-hidden="true" style={{width:6,height:6,borderRadius:"50%",background:remoteConnection === "connected" ? "var(--status-success)" : "var(--status-warning)"}}/>{remoteConnection === "connected" ? "Connected" : remoteConnection === "connecting" ? "Connecting…" : remoteConnection === "reconnecting" ? "Reconnecting…" : "Disconnected"}</span>}
+        {(remoteSelection?.sessionId ?? selectedSession?.id) && <VisualFrames key={remoteSelection?.sessionId ?? selectedSession?.id} sessionId={(remoteSelection?.sessionId ?? selectedSession?.id)!} mode="index" />}
+        <ToolbarMenu.Root>
+          <ToolbarMenu.Trigger className="shell-mobile-more" aria-label={t("appShell.moreActions")} title={t("appShell.moreActions")}>
+            <MoreHorizontal size={18} aria-hidden="true" />
+          </ToolbarMenu.Trigger>
+          <ToolbarMenu.Portal>
+            <ToolbarMenu.Positioner side="bottom" align="end" sideOffset={6} collisionPadding={8}>
+              <ToolbarMenu.Popup className="shell-mobile-more-menu">
+                <ToolbarMenu.Group>
+                  <ToolbarMenu.GroupLabel className="shell-mobile-menu-label">{t("appShell.appearance")}</ToolbarMenu.GroupLabel>
+                  <ToolbarMenu.Item className="shell-mobile-menu-item" onClick={() => toggleTheme()}>
+                    {isDark ? <Sun size={15} aria-hidden="true" /> : <Moon size={15} aria-hidden="true" />}
+                    <span>{isDark ? t("appShell.switchToSystemTheme") : t("appShell.switchToDarkMode")}</span>
+                  </ToolbarMenu.Item>
+                  <ToolbarMenu.Item className="shell-mobile-menu-item" onClick={() => setLocale(locale === "en" ? "ja" : locale === "ja" ? "zh-CN" : "en")}>
+                    <span aria-hidden="true">文</span><span>{t("languageSwitcher.switchTo", { language: locale === "en" ? "日本語" : locale === "ja" ? "简体中文" : "English" })}</span>
+                  </ToolbarMenu.Item>
+                </ToolbarMenu.Group>
+                <ToolbarMenu.Item className="shell-mobile-menu-item" onClick={() => setRightPanelOpen(value => !value)}>{rightPanelOpen ? t("appShell.hideFilePanel") : t("appShell.showFilePanel")}</ToolbarMenu.Item>
+                {remoteSelection && <>
+                  <ToolbarMenu.GroupLabel className="shell-mobile-menu-label">Thread</ToolbarMenu.GroupLabel>
+                  <ToolbarMenu.Item className="shell-mobile-menu-item" onClick={() => window.dispatchEvent(new Event("nook:thread-controls"))}>Thread controls</ToolbarMenu.Item>
+                  <ToolbarMenu.Item className="shell-mobile-menu-item" onClick={openSessionStatsPanel}>Context and usage</ToolbarMenu.Item>
+                </>}
+                {showChat && !remoteSelection && (
+                  <>
+                    <ToolbarMenu.Separator className="shell-mobile-menu-separator" />
+                    <ToolbarMenu.Group>
+                      <ToolbarMenu.GroupLabel className="shell-mobile-menu-label">{t("appShell.thread")}</ToolbarMenu.GroupLabel>
+                      {(sessionStats || contextUsage || modelCapacity || generationSpeed) && (
+                        <ToolbarMenu.Item className="shell-mobile-menu-item" onClick={openSessionStatsPanel}>
+                          <span aria-hidden="true">ⓘ</span><span>{t("appShell.sessionInfo")}</span>
+                        </ToolbarMenu.Item>
+                      )}
+                      <ToolbarMenu.Item className="shell-mobile-menu-item" disabled={!selectedSession} onClick={handleViewFullHistory}>
+                        <History size={15} aria-hidden="true" /><span>{t("appShell.fullHistory")}</span>
+                      </ToolbarMenu.Item>
+                      <ToolbarMenu.Item className="shell-mobile-menu-item" disabled={!selectedSession || (sessionStats?.userMessages ?? selectedSession?.messageCount ?? 0) === 0 || autoNameStatus.kind === "naming"} onClick={() => void handleAutoName()}>
+                        <Wand2 size={15} aria-hidden="true" /><span>{t("appShell.generateTitle")}</span>
+                      </ToolbarMenu.Item>
+                      <ToolbarMenu.Item className="shell-mobile-menu-item" onClick={() => toggleTopPanel("branches")}>
+                        <span aria-hidden="true">⑂</span><span>{t("branchNavigator.branches")}</span>
+                      </ToolbarMenu.Item>
+                      <ToolbarMenu.Item className="shell-mobile-menu-item" onClick={handleSystemPromptToggle}>
+                        <Terminal size={15} aria-hidden="true" /><span>{t("appShell.system")}</span>
+                      </ToolbarMenu.Item>
+                    </ToolbarMenu.Group>
+                  </>
+                )}
+              </ToolbarMenu.Popup>
+            </ToolbarMenu.Positioner>
+          </ToolbarMenu.Portal>
+        </ToolbarMenu.Root>
+        {showChat && !remoteSelection && (
           <>
             <div className="shell-toolbar-divider" aria-hidden="true" />
             {/* Session controls: history, generate title, branches, system */}
-            <div style={{ display: "flex", alignItems: "center", gap: 4, height: "100%" }}>
+            <div className="shell-toolbar-session-controls" style={{ display: "flex", alignItems: "center", gap: 4, height: "100%" }}>
               <button
                 onClick={handleViewFullHistory}
                 disabled={!selectedSession}
@@ -928,81 +1196,27 @@ export function AppShell() {
                 <History size={16} strokeWidth={1.8} aria-hidden="true" />
               </button>
               {(() => {
-                const hasMessages = Boolean(
-                  selectedSession
-                  && (sessionStats?.userMessages ?? selectedSession.messageCount) > 0,
-                );
+                const hasMessages = Boolean(selectedSession && (sessionStats?.userMessages ?? selectedSession.messageCount) > 0);
                 const disabled = !selectedSession || !hasMessages || autoNameStatus.kind === "naming";
                 const isSuccess = autoNameStatus.kind === "success";
                 const isError = autoNameStatus.kind === "error";
-                const label = autoNameStatus.kind === "naming"
-                  ? t("appShell.generating")
-                  : isSuccess
-                    ? t("appShell.titleUpdated")
-                    : isError
-                      ? t("appShell.generationFailed")
-                      : t("appShell.generateTitle");
-                const title = !selectedSession
-                  ? t("appShell.titleGenUnavailable")
-                  : !hasMessages
-                    ? t("appShell.titleGenNeedsMessage")
-                    : isError
-                      ? autoNameStatus.message
-                      : t("appShell.generateSessionTitle");
-
+                const label = autoNameStatus.kind === "naming" ? t("appShell.generating") : isSuccess ? t("appShell.titleUpdated") : isError ? t("appShell.generationFailed") : t("appShell.generateTitle");
+                const title = !selectedSession ? t("appShell.titleGenUnavailable") : !hasMessages ? t("appShell.titleGenNeedsMessage") : isError ? autoNameStatus.message : t("appShell.generateSessionTitle");
                 return (
-                  <button
-                    type="button"
-                    onClick={() => void handleAutoName()}
-                    disabled={disabled}
-                    title={title}
-                    aria-label={label}
-                    className="shell-toolbar-btn ui-focus-ring"
-                    style={{ opacity: autoNameStatus.kind === "naming" ? 1 : undefined }}
-                  >
-                    {autoNameStatus.kind === "naming" ? (
-                      <svg className="animate-spin" width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                        <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="2" opacity="0.25" />
-                        <path d="M21 12a9 9 0 0 0-9-9" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-                      </svg>
-                    ) : isSuccess ? (
-                      <Check size={16} strokeWidth={1.8} aria-hidden="true" style={{ color: "var(--accent)" }} />
-                    ) : isError ? (
-                      <Wand2 size={16} strokeWidth={1.8} aria-hidden="true" style={{ color: "var(--status-error)" }} />
-                    ) : (
-                      <Wand2 size={16} strokeWidth={1.8} aria-hidden="true" />
-                    )}
+                  <button type="button" onClick={() => void handleAutoName()} disabled={disabled} title={title} aria-label={label} className="shell-toolbar-btn ui-focus-ring" style={{ opacity: autoNameStatus.kind === "naming" ? 1 : undefined }}>
+                    {autoNameStatus.kind === "naming" ? <svg className="animate-spin" width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="2" opacity="0.25" /><path d="M21 12a9 9 0 0 0-9-9" stroke="currentColor" strokeWidth="2" strokeLinecap="round" /></svg> : isSuccess ? <Check size={16} strokeWidth={1.8} aria-hidden="true" style={{ color: "var(--accent)" }} /> : isError ? <Wand2 size={16} strokeWidth={1.8} aria-hidden="true" style={{ color: "var(--status-error)" }} /> : <Wand2 size={16} strokeWidth={1.8} aria-hidden="true" />}
                   </button>
                 );
               })()}
-              <BranchNavigator
-                tree={branchTree}
-                activeLeafId={branchActiveLeafId}
-                onLeafChange={handleBranchLeafChange}
-                inline
-                containerRef={topBarRef}
-                open={activeTopPanel === "branches"}
-                onToggle={() => toggleTopPanel("branches")}
-                hasSession
-              />
-              <button
-                ref={systemBtnRef}
-                onClick={handleSystemPromptToggle}
-                title={t("appShell.system")}
-                aria-label={t("appShell.system")}
-                aria-pressed={activeTopPanel === "system"}
-                className="shell-toolbar-btn ui-focus-ring"
-              >
-                <Terminal size={16} strokeWidth={1.8} aria-hidden="true" style={{ color: systemPrompt ? "var(--accent)" : undefined }} />
-              </button>
+              <BranchNavigator tree={branchTree} activeLeafId={branchActiveLeafId} onLeafChange={handleBranchLeafChange} inline containerRef={topBarRef} open={activeTopPanel === "branches"} onToggle={() => toggleTopPanel("branches")} hasSession />
+              <button ref={systemBtnRef} onClick={handleSystemPromptToggle} title={t("appShell.system")} aria-label={t("appShell.system")} aria-pressed={activeTopPanel === "system"} className="shell-toolbar-btn ui-focus-ring"><Terminal size={16} strokeWidth={1.8} aria-hidden="true" style={{ color: systemPrompt ? "var(--accent)" : undefined }} /></button>
             </div>
           </>
         )}
           {/* Session stats and generation speed — right-aligned in top bar */}
-          {showChat && (sessionStats || contextUsage || modelCapacity || generationSpeed) && (() => {
+          {(showChat || remoteSelection) && (sessionStats || contextUsage || modelCapacity || generationSpeed) && (() => {
             const tok = sessionStats?.tokens;
             const c = sessionStats?.cost ?? 0;
-            const costStr = c > 0 ? (c >= 0.01 ? `$${c.toFixed(2)}` : `<$0.01`) : null;
             const cacheHitRate = tok ? getCacheHitRate(tok.input, tok.cacheRead) : null;
             const cacheRateStr = cacheHitRate !== null ? formatPercent(cacheHitRate) : null;
             const currentSpeedStr = generationSpeed?.current !== null && generationSpeed?.current !== undefined
@@ -1050,14 +1264,12 @@ export function AppShell() {
                 title={tooltip || t("appShell.sessionInfo")}
                 aria-label={t("appShell.sessionInfo")}
                 aria-pressed={activeTopPanel === "session"}
+                className="shell-session-stats"
                 style={{
                   marginLeft: "auto",
                   display: "flex", alignItems: "center", justifyContent: "center", gap: 10,
                   paddingLeft: isMobile ? 0 : 12,
-                  // Reserve the corner for the always-visible file-panel
-                  // toggle: on mobile it is 44px wide and would otherwise
-                  // cover the session-stats button entirely.
-                  paddingRight: isMobile ? (rightPanelOpen ? 0 : 44) : rightPanelOpen ? 12 : 48,
+                  paddingRight: 12,
                   height: "100%",
                   minWidth: isMobile ? 44 : 0,
                   overflow: "hidden",
@@ -1082,39 +1294,6 @@ export function AppShell() {
                     <circle cx="12" cy="12" r="10" /><line x1="12" y1="16" x2="12" y2="12" /><line x1="12" y1="8" x2="12.01" y2="8" />
                   </svg>
                 )}
-                {!isMobile && tok && tok.input > 0 && (
-                  <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                    <svg width="12" height="12" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round">
-                      <line x1="5" y1="8.5" x2="5" y2="1.5" /><polyline points="2 4 5 1.5 8 4" />
-                    </svg>
-                    {formatCompactNumber(tok.input)}
-                  </span>
-                )}
-                {!isMobile && tok && tok.output > 0 && (
-                  <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                    <svg width="12" height="12" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round">
-                      <line x1="5" y1="1.5" x2="5" y2="8.5" /><polyline points="2 6 5 8.5 8 6" />
-                    </svg>
-                    {formatCompactNumber(tok.output)}
-                  </span>
-                )}
-                {!isMobile && tok && tok.cacheRead > 0 && (
-                  <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                    <svg width="12" height="12" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M8.5 5a3.5 3.5 0 1 1-1-2.45" /><polyline points="6.5 1.5 8.5 2.5 7.5 4.5" />
-                    </svg>
-                    {formatCompactNumber(tok.cacheRead)}
-                  </span>
-                )}
-                {!isMobile && modelCapacity?.maxTokens && (
-                  <span style={{ color: "var(--text-muted)", whiteSpace: "nowrap" }}>↗ {formatCompactNumber(modelCapacity.maxTokens)}</span>
-                )}
-                {!isMobile && cacheRateStr && (
-                  <span style={{ display: "flex", alignItems: "center", gap: 4, color: "var(--text-muted)" }}>
-                    <CircleCheck size={12} strokeWidth={1.8} aria-hidden="true" />
-                    {cacheRateStr}
-                  </span>
-                )}
                 {ctxStr && (
                   <span style={{ display: "flex", alignItems: "center", gap: 4, color: ctxColor, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                     <svg width="12" height="12" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round">
@@ -1123,19 +1302,9 @@ export function AppShell() {
                     {ctxStr}
                   </span>
                 )}
-                {!isMobile && costStr && (
-                  <span style={{ display: "flex", alignItems: "center", color: "var(--text)", fontWeight: 500 }}>
-                    {costStr}
-                  </span>
-                )}
                 {!isMobile && currentSpeedStr && (
                   <span style={{ display: "flex", alignItems: "center", gap: 4, color: "var(--text)", fontWeight: 600 }}>
                     {currentSpeedStr}
-                  </span>
-                )}
-                {!isMobile && averageSpeedStr && (
-                  <span style={{ display: "flex", alignItems: "center", gap: 4, color: "var(--text-muted)" }}>
-                    {averageSpeedStr}
                   </span>
                 )}
               </button>
@@ -1355,7 +1524,11 @@ export function AppShell() {
 
         {/* Chat content */}
         <div style={{ flex: 1, overflow: "hidden", position: "relative" }}>
-          {showChat ? (
+          {remoteSelection ? <RemoteChat key={`${remoteSelection.targetId}:${remoteSelection.sessionId ?? "new"}`} targetId={remoteSelection.targetId} sessionId={remoteSelection.sessionId} onSessionCreated={(sessionId) => {
+            setRemoteSelection(current => current ? {...current,sessionId} : current);
+            setRemoteRefresh(value=>value+1);
+            router.replace(`?remoteTarget=${encodeURIComponent(remoteSelection.targetId)}&remoteSession=${encodeURIComponent(sessionId)}`, {scroll:false});
+          }} onControlsChange={handleRemoteControlsChange} onConnectionChange={setRemoteConnection}/> : showChat ? (
             <ChatWindow
               key={sessionKey}
               session={selectedSession}
@@ -1482,26 +1655,6 @@ export function AppShell() {
         </div>
       </div>
     </div>
-    {/* File panel toggle — always visible at top-right */}
-    <button
-      onClick={() => setRightPanelOpen((v) => !v)}
-      title={rightPanelOpen ? t("appShell.hideFilePanel") : t("appShell.showFilePanel")}
-      aria-label={rightPanelOpen ? t("appShell.hideFilePanel") : t("appShell.showFilePanel")}
-      style={{
-        position: "fixed", top: 0, right: 0, zIndex: 300,
-        display: "flex", alignItems: "center", justifyContent: "center",
-        width: isMobile ? 44 : 36, height: isMobile ? 44 : 36, padding: 0,
-        background: "var(--bg-panel)", border: "none", borderLeft: "1px solid var(--border)", borderBottom: "1px solid var(--border)",
-        color: rightPanelOpen ? "var(--text)" : "var(--text-muted)",
-        cursor: "pointer", transition: "color var(--dur-fast) var(--ease-out-warm)",
-      }}
-      onMouseEnter={(e) => { e.currentTarget.style.color = "var(--text)"; }}
-      onMouseLeave={(e) => { e.currentTarget.style.color = rightPanelOpen ? "var(--text)" : "var(--text-muted)"; }}
-    >
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <rect x="3" y="3" width="18" height="18" rx="2" /><line x1="15" y1="3" x2="15" y2="21" />
-      </svg>
-    </button>
     {settingsTab && <SettingsConfig activeTab={settingsTab} toolCallsDefaultCollapsed={toolCallsDefaultCollapsed} onToolCallsDefaultCollapsedChange={handleToolCallsDefaultCollapsedChange} cwd={activeCwd ?? selectedSession?.cwd ?? newSessionCwd} sessionId={selectedSession?.id ?? null} onModelsSaved={() => setModelsRefreshKey((k) => k + 1)} onPluginsReloaded={() => setSessionKey((k) => k + 1)} onOmpUpdateAvailabilityChange={() => {}} onSelectTab={setSettingsTab} onClose={() => setSettingsTab(null)} />}
     {archiveBrowserOpen && (
       <ArchiveBrowser
@@ -1512,5 +1665,5 @@ export function AppShell() {
     )}
     </ToastProvider>
     </>
-  );
+);
 }

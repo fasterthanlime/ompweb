@@ -67,14 +67,18 @@ export function appendDeliveredUserMessage(
   delivered: UserMessage,
   optimisticUserKey: string | null,
 ): AgentMessage[] {
-  if (messages.some((message) => isSameDeliveredUserMessage(message, delivered))) return messages;
-
-  const deliveredKey = userMessageKey(delivered);
-  const last = messages[messages.length - 1];
-  if (optimisticUserKey && last?.role === "user" && userMessageKey(last) === optimisticUserKey) {
-    return optimisticUserKey === deliveredKey
-      ? messages
-      : [...messages.slice(0, -1), delivered];
+  const deliveredIndex = messages.findIndex((message) => isSameDeliveredUserMessage(message, delivered));
+  const optimisticIndex = optimisticUserKey
+    ? messages.findLastIndex((message) => message.role === "user" && userMessageKey(message) === optimisticUserKey)
+    : -1;
+  if (deliveredIndex >= 0) {
+    // A snapshot may already contain the confirmation beside our pending copy.
+    return optimisticIndex >= 0 && optimisticIndex !== deliveredIndex
+      ? messages.filter((_, index) => index !== optimisticIndex)
+      : messages;
+  }
+  if (optimisticIndex >= 0) {
+    return messages.map((message, index) => index === optimisticIndex ? delivered : message);
   }
   return [...messages, delivered];
 }

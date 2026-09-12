@@ -1,9 +1,16 @@
 "use client";
 
+import { useMessageSelection } from "@/hooks/useMessageSelection";
 import { memo, useState, useRef, useEffect, useMemo, useCallback, type ComponentProps } from "react";
 import { Copy, Check, GitFork, CornerUpLeft, ChevronRight, ChevronDown, Brain, EyeOff, CircleAlert, LoaderCircle } from "lucide-react";
+import { VisualFrames } from "./VisualFrames";
 import { MarkdownBody } from "./MarkdownBody";
 import { ClickableImage } from "./ImageLightbox";
+import { MessageReactions } from "./MessageReactions";
+import { getReactionTargetId } from "@/lib/thread-expression-target";
+import { copyText } from "@/lib/clipboard";
+import { toast } from "./ui/toast";
+import { TranscriptImages } from "./TranscriptImages";
 import { translate, useI18n, type Locale } from "@/lib/i18n";
 import { parseCompactionSummary } from "@/lib/compaction-summary";
 import { isEmptyThinkingBlock } from "@/lib/message-display";
@@ -106,6 +113,8 @@ interface Props {
   cwd?: string;
   onOpenFile?: (filePath: string) => void;
   entryId?: string;
+  /** Remote message index used with role/timestamp to form a stable target. */
+  messageIndex?: number;
   onFork?: (entryId: string) => void;
   forking?: boolean;
   onNavigate?: (entryId: string) => void;
@@ -114,6 +123,10 @@ interface Props {
   showTimestamp?: boolean;
   prevTimestamp?: number;
   sessionId?: string;
+  /** Session/remote descriptor id used by the expression API. */
+  threadExpressionId?: string;
+  /** Precomputed local entry or remote deterministic reaction target. */
+  reactionTargetId?: string;
   toolCallsDefaultCollapsed?: boolean;
   /** omp-reported output throughput (get_state.tokensPerSecond), live while streaming. */
   liveTokensPerSecond?: number | null;
@@ -145,13 +158,14 @@ function haveSameRelevantToolResults(
   }
   return true;
 }
-
-export const MessageView = memo(function MessageView({ message, isStreaming, toolResults, modelNames, cwd, onOpenFile, entryId, onFork, forking, onNavigate, prevAssistantEntryId, onEditContent, showTimestamp, prevTimestamp, sessionId, toolCallsDefaultCollapsed = true, liveTokensPerSecond }: Props) {
+export const MessageView = memo(function MessageView({ message, isStreaming, toolResults, modelNames, cwd, onOpenFile, entryId, messageIndex = 0, onFork, forking, onNavigate, prevAssistantEntryId, onEditContent, showTimestamp, prevTimestamp, sessionId, threadExpressionId, reactionTargetId, toolCallsDefaultCollapsed = true, liveTokensPerSecond }: Props) {
+  const threadId = threadExpressionId ?? sessionId;
+  const messageId = reactionTargetId ?? getReactionTargetId(message.role, "timestamp" in message ? message.timestamp : undefined, messageIndex, entryId);
   if (message.role === "user") {
-    return <UserMessageView message={message as UserMessage} cwd={cwd} onOpenFile={onOpenFile} entryId={entryId} onFork={onFork} forking={forking} onNavigate={onNavigate} prevAssistantEntryId={prevAssistantEntryId} onEditContent={onEditContent} />;
+    return <UserMessageView message={message as UserMessage} showTimestamp={showTimestamp} cwd={cwd} onOpenFile={onOpenFile} entryId={entryId} onFork={onFork} forking={forking} onNavigate={onNavigate} prevAssistantEntryId={prevAssistantEntryId} onEditContent={onEditContent} reactionThreadId={threadId} reactionMessageId={messageId} />;
   }
   if (message.role === "assistant") {
-    return <AssistantMessageView message={message as AssistantMessage} isStreaming={isStreaming} toolResults={toolResults} modelNames={modelNames} cwd={cwd} onOpenFile={onOpenFile} showTimestamp={showTimestamp} prevTimestamp={prevTimestamp} sessionId={sessionId} entryId={entryId} toolCallsDefaultCollapsed={toolCallsDefaultCollapsed} liveTokensPerSecond={liveTokensPerSecond} />;
+    return <AssistantMessageView message={message as AssistantMessage} isStreaming={isStreaming} toolResults={toolResults} modelNames={modelNames} cwd={cwd} onOpenFile={onOpenFile} showTimestamp={showTimestamp} prevTimestamp={prevTimestamp} sessionId={sessionId} entryId={entryId} toolCallsDefaultCollapsed={toolCallsDefaultCollapsed} liveTokensPerSecond={liveTokensPerSecond} reactionThreadId={threadId} reactionMessageId={messageId} />;
   }
   if (message.role === "toolResult") {
     // Rendered inline under its toolCall — skip standalone rendering if paired
@@ -182,6 +196,8 @@ export const MessageView = memo(function MessageView({ message, isStreaming, too
     && prev.cwd === next.cwd
     && prev.onOpenFile === next.onOpenFile
     && prev.entryId === next.entryId
+    && prev.messageIndex === next.messageIndex
+    && prev.reactionTargetId === next.reactionTargetId
     && prev.onFork === next.onFork
     && prev.forking === next.forking
     && prev.onNavigate === next.onNavigate
@@ -190,11 +206,13 @@ export const MessageView = memo(function MessageView({ message, isStreaming, too
     && prev.showTimestamp === next.showTimestamp
     && prev.prevTimestamp === next.prevTimestamp
     && prev.sessionId === next.sessionId
+    && prev.threadExpressionId === next.threadExpressionId
     && prev.toolCallsDefaultCollapsed === next.toolCallsDefaultCollapsed
     && prev.liveTokensPerSecond === next.liveTokensPerSecond;
 });
 
-function UserMessageView({ message, cwd, onOpenFile, entryId, onFork, forking, onNavigate, prevAssistantEntryId, onEditContent }: {  message: UserMessage;
+function UserMessageView({ message, showTimestamp = true, cwd, onOpenFile, entryId, onFork, forking, onNavigate, prevAssistantEntryId, onEditContent, reactionThreadId, reactionMessageId }: { message: UserMessage;
+  showTimestamp?: boolean;
   cwd?: string;
   onOpenFile?: (filePath: string) => void;
   entryId?: string;
@@ -203,11 +221,25 @@ function UserMessageView({ message, cwd, onOpenFile, entryId, onFork, forking, o
   onNavigate?: (entryId: string) => void;
   prevAssistantEntryId?: string;
   onEditContent?: (content: string) => void;
+  reactionThreadId?: string;
+  reactionMessageId?: string;
 }) {
   const { t, locale } = useI18n();
-  const [hovered, setHovered] = useState(false);
-  const [actionsActive, setActionsActive] = useState(false);
-  const { copied, copy: copyContent } = useCopyFeedback();
+  const hovered = false;
+  const { active: actionsActive, setActive: setActionsActive, rootRef: selectionRef } = useMessageSelection();
+  const [copied, setCopied] = useState(false);
+  const bubbleRef = useRef<HTMLDivElement>(null);
+  const [expanded, setExpanded] = useState(false);
+  const [overflows, setOverflows] = useState(false);
+  useEffect(() => {
+    const element = bubbleRef.current;
+    if (!element) return;
+    const measure = () => setOverflows(element.scrollHeight > USER_BUBBLE_MAX_HEIGHT + 1);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [message.content]);
 
   const content =
     typeof message.content === "string"
@@ -228,29 +260,17 @@ function UserMessageView({ message, cwd, onOpenFile, entryId, onFork, forking, o
 
   return (
     <div
-      style={{ marginBottom: 18, display: "flex", flexDirection: "column", alignItems: "flex-end", paddingRight: 6 }}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
+      style={{ marginBottom: 10, display: "flex", flexDirection: "column", alignItems: "flex-end", paddingRight: 6 }}
+      title={time ?? undefined}
+      className="message-interaction-target"
+      ref={selectionRef}
+      data-selected={actionsActive || undefined}
+      tabIndex={0}
+      onFocusCapture={event => { if (event.target === event.currentTarget) setActionsActive(true); }}
+      onBlurCapture={(event) => { const target = event.relatedTarget as Element | null; if (!event.currentTarget.contains(target) && !target?.closest?.(".message-reaction-positioner")) setActionsActive(false); }}
+      onClick={event => { if (!(event.target as Element).closest("button, a, input")) setActionsActive(true); }}
     >
-      <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", maxWidth: "85%", minWidth: 0 }}>
-        <div
-          className="chat-message-card"
-          style={{
-            maxWidth: "100%",
-            minWidth: 0,
-            background: "var(--user-bg)",
-            border: "1px solid color-mix(in srgb, var(--accent) 28%, transparent)",
-            borderRadius: "var(--radius-card)",
-            boxShadow: "var(--shadow-card)",
-            padding: "8px 12px",
-            fontSize: 14,
-            lineHeight: 1.6,
-            color: "var(--text)",
-            wordBreak: "break-word",
-            maxHeight: USER_BUBBLE_MAX_HEIGHT,
-            overflowY: "auto",
-          }}
-        >
+      <div style={{ position: "relative", display: "flex", flexDirection: "column", alignItems: "flex-end", maxWidth: "85%", minWidth: 0 }}>
           {imageBlocks.length > 0 && (
             <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: content ? 8 : 0 }}>
               {imageBlocks.map((img, i) => {
@@ -269,21 +289,46 @@ function UserMessageView({ message, cwd, onOpenFile, entryId, onFork, forking, o
                     key={i}
                     src={src}
                     alt=""
-                    style={{ maxWidth: 240, maxHeight: 240, borderRadius: 6, objectFit: "contain", display: "block", border: "1px solid color-mix(in srgb, var(--accent) 18%, transparent)" }}
+                    style={{ maxWidth: 240, maxHeight: 240, borderRadius: 6, objectFit: "contain", display: "block", border: "1px solid var(--border)" }}
                   />
                 );
               })}
             </div>
           )}
+        {content && (
+        <div
+          ref={bubbleRef}
+          className="chat-message-card"
+          style={{
+            maxWidth: "100%",
+            minWidth: 0,
+            background: "var(--user-bg)",
+            border: "1px solid var(--border)",
+            borderRadius: "var(--radius-card)",
+            boxShadow: "var(--shadow-card)",
+            padding: "10px 16px",
+            fontSize: 18,
+            lineHeight: 1.5,
+            color: "var(--text)",
+            wordBreak: "break-word",
+            maxHeight: expanded ? undefined : USER_BUBBLE_MAX_HEIGHT,
+            overflowY: "hidden",
+          }}
+        >
           {content && <SafeMarkdownBody className="markdown-user-message" cwd={cwd} onOpenFile={onOpenFile}>{content}</SafeMarkdownBody>}
         </div>
+        )}
+        {overflows && <button type="button" aria-expanded={expanded} onClick={() => setExpanded(value => !value)} style={{ width: "100%", padding: "7px 10px", border: 0, borderRadius: "0 0 var(--radius-card) var(--radius-card)", background: "var(--user-bg)", color: "var(--accent)", fontSize: 12, cursor: "pointer" }}>{expanded ? "Collapse message" : "More text · Expand message"}</button>}
 
         {/* Bottom row: action buttons + timestamp — inside the bubble's column,
             spanning its width, so the timestamp aligns with its right edge. */}
         {(time || canFork || canNavigate || true) && (
           <div style={{
             display: "flex", alignItems: "center", justifyContent: "flex-end",
-            gap: 6, marginTop: 3, width: "100%",
+            position: "absolute", bottom: 0, right: 0, zIndex: 2,
+            background: "var(--bg-panel)", borderRadius: "var(--radius-control)", padding: "4px 8px",
+            visibility: actionsActive ? "visible" : "hidden",
+            gap: 6, marginTop: 2, width: "100%",
           }}>
           <div
             style={{
@@ -293,11 +338,11 @@ function UserMessageView({ message, cwd, onOpenFile, entryId, onFork, forking, o
               transition: "opacity var(--dur-fast) var(--ease-out-warm)",
             }}
             onFocusCapture={() => setActionsActive(true)}
-            onBlurCapture={() => setActionsActive(false)}
+
           >
             <Tooltip content={t("messageView.copyMessage")}>
               <button
-                onClick={() => copyContent(content)}
+                onClick={() => { void copyText(content).then(() => { setCopied(true); setActionsActive(false);  }).catch(() => toast.error("Couldn’t copy message")); }}
                 aria-label={t("messageView.copyMessage")}
                 style={{
                   display: "flex", alignItems: "center", gap: 4,
@@ -317,6 +362,7 @@ function UserMessageView({ message, cwd, onOpenFile, entryId, onFork, forking, o
                 {copied ? t("messageView.copied") : t("messageView.copy")}
               </button>
             </Tooltip>
+
           </div>
           {(canFork || canNavigate) && (
             <div
@@ -327,7 +373,7 @@ function UserMessageView({ message, cwd, onOpenFile, entryId, onFork, forking, o
                 transition: "opacity var(--dur-fast) var(--ease-out-warm)",
               }}
               onFocusCapture={() => setActionsActive(true)}
-              onBlurCapture={() => setActionsActive(false)}
+  
             >
               {canNavigate && (
                 <Tooltip content={t("messageView.editFromHereTitle")}>
@@ -380,9 +426,10 @@ function UserMessageView({ message, cwd, onOpenFile, entryId, onFork, forking, o
               )}
             </div>
           )}
-          {time && <span style={{ fontSize: 10, color: "var(--text-dim)" }}>{time}</span>}
+          {time && (showTimestamp || hovered || actionsActive) && <span style={{ fontSize: 10, color: "var(--text-dim)" }}>{time}</span>}
           </div>
         )}
+      <MessageReactions showTrigger={false} readOnly threadId={reactionThreadId} messageId={reactionMessageId} />
       </div>
     </div>
   );
@@ -400,6 +447,8 @@ function AssistantMessageView({
   entryId,
   toolCallsDefaultCollapsed,
   liveTokensPerSecond,
+  reactionThreadId,
+  reactionMessageId,
 }: {
   message: AssistantMessage;
   isStreaming?: boolean;
@@ -413,7 +462,10 @@ function AssistantMessageView({
   entryId?: string;
   toolCallsDefaultCollapsed: boolean;
   liveTokensPerSecond?: number | null;
+  reactionThreadId?: string;
+  reactionMessageId?: string;
 }) {
+  const { active: actionsOpen, setActive: setActionsOpen, rootRef: actionRootRef } = useMessageSelection();
   const { t, locale } = useI18n();
   const time = showTimestamp ? formatTime(message.timestamp, locale) : null;
   const blockItems = (message.content ?? [])
@@ -421,6 +473,7 @@ function AssistantMessageView({
     .filter(({ block }) => !isEmptyThinkingBlock(block, { isStreaming }));
   const blocks = blockItems.map(({ block }) => block);
   const hasActivityBlocks = blocks.some((block) => block.type === "thinking" || block.type === "toolCall");
+  const hasRenderableBlocks = blocks.some((block) => block.type === "text" ? Boolean((block as TextContent).text?.trim()) : block.type !== "thinking" || Boolean((block as ThinkingContent).thinking?.trim()));
   const blockItemsRef = useRef(blockItems);
   blockItemsRef.current = blockItems;
 
@@ -495,12 +548,17 @@ function AssistantMessageView({
     return () => clearInterval(id);
   }, [isStreaming]);
 
-  if (blocks.length === 0 && !isStreaming) return null;
+  if (!hasRenderableBlocks && !isStreaming) return null;
 
   return (
     <div
-      className="chat-message"
-      style={{ marginBottom: 6 }}
+      className="chat-message message-interaction-target"
+      ref={actionRootRef}
+      data-selected={actionsOpen || undefined}
+      style={{ marginBottom: 6, position: "relative" }}
+      tabIndex={0}
+      onFocus={event => { if (event.target === event.currentTarget) setActionsOpen(true); }}
+      onClick={event => { if (!(event.target as Element).closest("button, a, input")) setActionsOpen(true); }}
     >
       {/* Model label */}
       <div
@@ -508,7 +566,7 @@ function AssistantMessageView({
           fontSize: 11,
           color: "var(--text-dim)",
           marginBottom: 4,
-          display: hasActivityBlocks ? "none" : "flex",
+          display: actionsOpen && !hasActivityBlocks ? "flex" : "none",
           alignItems: "center",
           gap: 6,
         }}
@@ -559,28 +617,58 @@ function AssistantMessageView({
         ))}
       </div>
 
-      {time && !isStreaming && (
-        <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 3 }}>
+      {time && actionsOpen && !isStreaming && (
+        <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 2 }}>
           <span style={{ fontSize: 10, color: "var(--text-dim)" }}>{time}</span>
         </div>
       )}
+      {actionsOpen && !isStreaming && <div style={{ position: "absolute", right: 0, bottom: 0, display: "flex", alignItems: "center", gap: 6, padding: "4px 8px", background: "var(--bg-panel)", border: "1px solid var(--border)", borderRadius: "var(--radius-control)", zIndex: 5 }}><button type="button" onClick={event => { event.stopPropagation(); void copyText(blocks.filter((block): block is TextContent => block.type === "text").map(block => block.text).join("\n")).then(() => setActionsOpen(false)).catch(() => toast.error("Couldn’t copy message")); }} className="message-reaction-action"><Copy size={13} aria-hidden="true"/>Copy</button><MessageReactions compact onSelected={() => setActionsOpen(false)} threadId={reactionThreadId} messageId={reactionMessageId} /></div>
+      }
+      <MessageReactions showTrigger={false} threadId={reactionThreadId} messageId={reactionMessageId} disabled={isStreaming || !blocks.some(block=>block.type === "text" && block.text.trim())} />
     </div>
   );
 }
+function getVisualFrameIds(block: ToolCallContent, result: ToolResultMessage | undefined): string[] {
+  if (!result) return [];
+  const details = result.details;
+  const xdev = details && typeof details === "object" && !Array.isArray(details) ? (details as Record<string, unknown>).xdev : undefined;
+  const xdevTool = xdev && typeof xdev === "object" && !Array.isArray(xdev) ? (xdev as Record<string, unknown>).tool : undefined;
+  const inputPath = typeof block.input?.path === "string" ? block.input.path : "";
+  const isVisualTool = block.toolName === "show_visual"
+    || (block.toolName === "write" && (inputPath === "xd://show_visual" || xdevTool === "show_visual"));
+  if (!isVisualTool) return [];
+  const detailArgs = xdev && typeof xdev === "object" && !Array.isArray(xdev) ? (xdev as Record<string, unknown>).args : undefined;
+  let invocationArgs: Record<string, unknown> | undefined = detailArgs && typeof detailArgs === "object" && !Array.isArray(detailArgs) ? detailArgs as Record<string, unknown> : block.toolName === "show_visual" ? block.input : undefined;
+  if (!invocationArgs && block.toolName === "write" && typeof block.input?.content === "string") {
+    try {
+      const parsed = JSON.parse(block.input.content) as unknown;
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) invocationArgs = parsed as Record<string, unknown>;
+    } catch {
+      // Malformed tool input cannot identify an update target; do not infer one.
+    }
+  }
+  const actionValue = invocationArgs && typeof invocationArgs.action === "string" ? invocationArgs.action : undefined;
+  if (actionValue === "update" || actionValue === "remove" || actionValue === "list") return [];
+  const text = typeof result.content === "string"
+    ? result.content
+    : Array.isArray(result.content)
+      ? result.content.filter((part): part is TextContent => part.type === "text" && typeof part.text === "string").map((part) => part.text).join("\n")
+      : "";
+  const id = text.match(/\bVisual\s+([A-Za-z0-9_-]{1,100})\b/i)?.[1];
+  return id ? [id] : [];
+}
 
 function BlockView({ block, toolResults, isStreaming, streamingDuration, toolCallDurations, cwd, onOpenFile, sessionId, entryId, blockIndex, toolCallsDefaultCollapsed }: { block: AssistantContentBlock; toolResults?: Map<string, ToolResultMessage>; isStreaming?: boolean; streamingDuration?: number; toolCallDurations?: Map<string, number>; cwd?: string; onOpenFile?: (filePath: string) => void; sessionId?: string; entryId?: string; blockIndex: number; toolCallsDefaultCollapsed: boolean }) {
-  if (block.type === "text") {
-    return <TextBlock block={block as TextContent} isStreaming={isStreaming} cwd={cwd} onOpenFile={onOpenFile} />;
-  }
-  if (block.type === "thinking") {
-    return <ThinkingBlock block={block as ThinkingContent} duration={streamingDuration} sessionId={sessionId} entryId={entryId} blockIndex={blockIndex} />;
-  }
+  if (block.type === "text") return <TextBlock block={block as TextContent} isStreaming={isStreaming} cwd={cwd} onOpenFile={onOpenFile} />;
+  if (block.type === "thinking") return <ThinkingBlock block={block as ThinkingContent} duration={streamingDuration} sessionId={sessionId} entryId={entryId} blockIndex={blockIndex} />;
   if (block.type === "toolCall") {
     const tc = block as ToolCallContent;
     const result = toolResults?.get(tc.toolCallId);
     const duration = toolCallDurations?.get(tc.toolCallId);
-    return <ToolCallBlock block={tc} result={result} duration={duration} isStreaming={isStreaming} defaultCollapsed={toolCallsDefaultCollapsed} />;
+    const visualFrameIds = getVisualFrameIds(tc, result);
+    return <><ToolCallBlock block={tc} result={result} duration={duration} isStreaming={isStreaming} defaultCollapsed={toolCallsDefaultCollapsed} />{sessionId && visualFrameIds.length > 0 && <VisualFrames sessionId={sessionId} frameIds={visualFrameIds} />}</>;
   }
+  if (block.type === "image") return <TranscriptImages images={[block as ImageContent]} sessionId={sessionId} />;
   return null;
 }
 
@@ -1463,7 +1551,9 @@ function CustomMessageView({ message, cwd, onOpenFile }: { message: CustomMessag
                 })}
               </div>
             )}
-            {displayText ? <MarkdownBody className="markdown-custom-message" cwd={cwd} onOpenFile={onOpenFile}>{displayText}</MarkdownBody> : <span style={{ color: "var(--text-dim)", fontSize: 12 }}>{t("messageView.noMessage")}</span>}
+            {displayText ? (message.customType === "async-result"
+              ? <pre style={{ margin: 0, fontFamily: "var(--font-mono)", fontSize: 12, lineHeight: 1.5, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{displayText}</pre>
+              : <MarkdownBody className="markdown-custom-message" cwd={cwd} onOpenFile={onOpenFile}>{displayText}</MarkdownBody>) : <span style={{ color: "var(--text-dim)", fontSize: 12 }}>{t("messageView.noMessage")}</span>}
           </div>
         ) : (
           <button

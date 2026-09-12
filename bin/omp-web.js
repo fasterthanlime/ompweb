@@ -27,20 +27,11 @@ const { getAccessibleAddresses, getBrowserUrl, formatAddressBanner, isLoopbackHo
 const pkgDir = path.join(__dirname, "..");
 const nextDir = path.join(pkgDir, ".next");
 
-// Resolve next's CLI entry directly to avoid relying on .bin symlinks (which
-// may not exist when installed via npx).
-let nextBin;
-try {
-  nextBin = require.resolve("next/dist/bin/next", { paths: [pkgDir] });
-} catch {
-  // Fallback: locate next package root and derive the bin path manually.
-  try {
-    const nextPkg = require.resolve("next/package.json", { paths: [pkgDir] });
-    nextBin = path.join(path.dirname(nextPkg), "dist", "bin", "next");
-  } catch {
-    nextBin = path.join(pkgDir, "node_modules", "next", "dist", "bin", "next");
-  }
-}
+// The custom Next HTTP server (server/omp-web-server.ts) owns the HTTP server
+// and upgrade handling so /api/dictation/live/socket can be served as a
+// same-origin WebSocket; it drives Next through the same internal
+// getRequestHandlers pathway the CLIs use.
+const serverEntry = path.join(pkgDir, "server", "omp-web-server.ts");
 
 let pkgVersion = "0.0.0";
 try {
@@ -80,11 +71,12 @@ if (!isLoopbackHost(hostname)) {
   }
 }
 
-const nextArgs = ["start", "-p", port];
-nextArgs.push("-H", hostname);
+const serverArgs = ["--experimental-strip-types", serverEntry, "-p", port];
+serverArgs.push("-H", hostname);
 
-// Always run next's JS entry with node directly — avoids .bin symlink issues
-// and path-with-spaces problems on Windows when shell: true is used.
+// Run the server with node directly (never shell: true) — avoids .bin symlink
+// issues and path-with-spaces problems on Windows. Type stripping is available
+// on the engines floor (Node >= 22.19).
 const browserUrl = getBrowserUrl(hostname, port);
 async function main() {
   if (!await isPortAvailable(port, hostname)) {
@@ -94,7 +86,7 @@ async function main() {
     return;
   }
 
-  const child = spawn(process.execPath, [nextBin, ...nextArgs], {
+  const child = spawn(process.execPath, serverArgs, {
     cwd: pkgDir,
     stdio: ["inherit", "pipe", "inherit"],
     env: {

@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "fs";
 import { homedir } from "os";
+import { randomUUID } from "crypto";
 import { validateAgentImages } from "./image-attachments";
 import { invalidateModelsCache } from "./models-cache";
 import { RpcCommandError, RpcProcess, type RpcFrame } from "./omp/rpc-process";
@@ -15,6 +16,26 @@ import type {
   WebSessionState,
 } from "./pi-types";
 import type { ExtensionWidgetItem } from "./types";
+import { getSessionGoal, setSessionGoal } from "./session-preferences";
+import {
+  GOAL_TOOL,
+  SET_GOAL_TOOL,
+  goalPrompt,
+  parseSetGoalArguments,
+  validateSetGoalArguments,
+  appendInteractionGuidance,
+  type ActiveGoal,
+} from "./web-mode-state";
+import {
+  THREAD_EXPRESSION_TOOLS,
+  THREAD_EXPRESSION_TOOL_NAMES,
+  handleThreadExpressionTool,
+  getLocalReactionTargets,
+} from "./thread-expression";
+import { VISUAL_TOOL, handleVisualTool } from "./visual-frame";
+
+const SERVER_HOST_TOOLS = [...THREAD_EXPRESSION_TOOLS, VISUAL_TOOL];
+const SERVER_HOST_TOOL_NAMES = new Set([...THREAD_EXPRESSION_TOOL_NAMES, VISUAL_TOOL.name]);
 
 // ============================================================================
 // Types
@@ -287,6 +308,9 @@ export class AgentSessionWrapper {
   private compacting = false;
   private fastModeEnabled = false;
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
+  private goal: ActiveGoal | null = null;
+  private goalContinuation: NodeJS.Immediate | null = null;
+  private browserTools: Array<Record<string, unknown>> = [];
   private onDestroyCallback: (() => void) | null = null;
   private onIdentityChangeCallback: ((oldId: string, newId: string) => void) | null = null;
   private unsubscribeFrames: (() => void) | null = null;
@@ -314,6 +338,7 @@ export class AgentSessionWrapper {
    * only (no runtime RPC toggles it), so applying a changed advisor setting
    * means replacing an idle child on the next startRpcSession call. */
   readonly advisorSpawned: boolean;
+  runningSince: number | null = null;
   /** The cwd recorded in the session file header; null for brand-new sessions
    * or when the header lacks one. Used to detect a spawn fallback so a notice
    * can warn the user the agent is running in a different directory. */
@@ -369,6 +394,10 @@ export class AgentSessionWrapper {
     await this.proc.sendCommand({ type: "set_subagent_subscription", level: "events" }).catch(() => {});
     const state = await this.proc.sendCommand<RpcSessionState>({ type: "get_state" });
     this.applyIdentity(state);
+    this.goal = getSessionGoal(this._sessionId);
+    // Restarting must not silently resume autonomous work.
+    if (this.goal?.status === "active") this.updateGoal({ ...this.goal, status: "paused", summary: "Session restarted; use /goal resume to continue." });
+    await this.proc.sendCommand({ type: "set_host_tools", tools: [...SERVER_HOST_TOOLS, GOAL_TOOL, SET_GOAL_TOOL] });
     // Warn when the spawn cwd differs from the session's recorded directory.
     // This happens when the recorded cwd was deleted (removed worktree, moved
     // repo, different machine): resolveSpawnCwd silently substituted a live
@@ -403,6 +432,7 @@ export class AgentSessionWrapper {
       level: "error",
       message: `The omp process for this session exited unexpectedly${detail ? `: ${detail}` : "."}`,
     });
+    if (this.goal?.status === "active") this.updateGoal({ ...this.goal, status: "paused", summary: "Runtime exited; use /goal resume to continue." });
     // Terminal agent_end so a client mid-stream stops spinning immediately
     // instead of waiting for the reconcile poll.
     if (this.streaming || this.promptRunning) this.emit({ type: "agent_end", isTerminal: true, messages: [] });
@@ -429,6 +459,7 @@ export class AgentSessionWrapper {
         break;
       }
       case "agent_start":
+        this.runningSince = Date.now();
         this.streaming = true;
         // The session file can appear just after the prompt acknowledgement.
         // Invalidate and signal the sidebar now rather than waiting for the
@@ -450,6 +481,16 @@ export class AgentSessionWrapper {
           this.streaming = false;
           this.promptRunning = false;
           invalidateSessionListCache();
+          if (this.goal?.status === "active") {
+            const messages = Array.isArray(event.messages) ? event.messages as Array<{ role?: string; stopReason?: string }> : [];
+            const lastAssistant = messages.findLast((message) => message.role === "assistant");
+            if (lastAssistant?.stopReason !== "stop") {
+              this.updateGoal({ ...this.goal, status: "paused", summary: "Turn interrupted or failed; use /goal resume to continue." });
+            } else {
+              this.scheduleGoalContinuation();
+              event.isTerminal = false;
+            }
+          }
         }
         break;
       case "prompt_result":
@@ -476,6 +517,7 @@ export class AgentSessionWrapper {
         // reuses the original command id after the immediate ack).
         if (event.success === false && event.command === "prompt") {
           this.promptRunning = false;
+          if (this.goal?.status === "active") this.updateGoal({ ...this.goal, status: "paused", summary: String(event.error ?? "Prompt failed") });
           this.emit({ type: "prompt_error", errorMessage: (event.error as string) ?? "Prompt failed" });
           notifyRunningChange();
           return;
@@ -490,6 +532,42 @@ export class AgentSessionWrapper {
         break;
       }
       case "host_tool_call": {
+        const serverToolName = typeof event.toolName === "string" ? event.toolName : "";
+        if (SERVER_HOST_TOOL_NAMES.has(serverToolName)) {
+          void this.handleServerHostTool(event, serverToolName);
+          return;
+        }
+        if (event.toolName === SET_GOAL_TOOL.name) {
+          try {
+            const args = parseSetGoalArguments(event.arguments);
+            validateSetGoalArguments(this.goal, args, { activeTurn: this.hasActiveTurn() });
+            if (args.action === "clear") {
+              this.updateGoal(null);
+              this.proc.sendFrame({ type: "host_tool_result", id: event.id, result: { content: [{ type: "text", text: appendInteractionGuidance(this._sessionId, "Goal cleared.") }] } });
+              return;
+            }
+            const goal: ActiveGoal = { id: randomUUID(), objective: args.objective!, startedAt: Date.now(), status: "active" };
+            this.updateGoal(goal);
+            this.proc.sendFrame({ type: "host_tool_result", id: event.id, result: { content: [{ type: "text", text: appendInteractionGuidance(this._sessionId, goalPrompt(goal)) }] } });
+          } catch (error) {
+            this.proc.sendFrame({ type: "host_tool_result", id: event.id, isError: true, result: { content: [{ type: "text", text: String(error) }] } });
+          }
+          return;
+        }
+        if (event.toolName === GOAL_TOOL.name) {
+          const args = event.arguments as Record<string, unknown> | undefined;
+          const valid = this.goal?.status === "active" && args?.goalId === this.goal.id
+            && (args.status === "completed" || args.status === "blocked")
+            && typeof args.summary === "string" && args.summary.trim().length > 0;
+          try {
+            if (!valid) throw new Error("No matching active goal, or invalid status/summary.");
+            this.updateGoal({ ...this.goal!, status: args!.status as "completed" | "blocked", summary: (args!.summary as string).trim() });
+            this.proc.sendFrame({ type: "host_tool_result", id: event.id, result: { content: [{ type: "text", text: `Goal ${args!.status}.` }] } });
+          } catch (error) {
+            this.proc.sendFrame({ type: "host_tool_result", id: event.id, isError: true, result: { content: [{ type: "text", text: String(error) }] } });
+          }
+          return;
+        }
         const id = typeof event.id === "string" ? event.id : "";
         const toolName = typeof event.toolName === "string" ? event.toolName : "";
         // Route REGISTERED host tools to an attached UI (the browser answers
@@ -552,6 +630,33 @@ export class AgentSessionWrapper {
 
     this.emit(event);
     notifyRunningChange({ refreshSessionList });
+  }
+
+  private updateGoal(goal: ActiveGoal | null): void {
+    setSessionGoal(this._sessionId, goal);
+    this.goal = goal;
+    if (this.goalContinuation) {
+      clearImmediate(this.goalContinuation);
+      this.goalContinuation = null;
+      this.promptRunning = false;
+    }
+    this.emit({ type: "web_goal_updated", goal });
+    notifyRunningChange();
+  }
+
+  private scheduleGoalContinuation(): void {
+    if (this.goalContinuation) return;
+    const goal = this.goal;
+    this.promptRunning = true;
+    this.goalContinuation = setImmediate(() => {
+      this.goalContinuation = null;
+      if (!this.isAlive() || this.goal !== goal || goal?.status !== "active") return;
+      void this.send({ type: "prompt", message: goalPrompt(goal) }).catch((error) => {
+        if (this.goal === goal) this.updateGoal({ ...goal, status: "paused", summary: String(error) });
+        this.emit({ type: "notice", level: "error", message: `Goal paused: ${String(error)}` });
+        this.emit({ type: "agent_end", isTerminal: true, messages: [] });
+      });
+    });
   }
 
   /** Forget a pending dialog and its expiry timer. */
@@ -631,6 +736,29 @@ export class AgentSessionWrapper {
    * forever waiting for a response. Registered host tools are routed to
    * listeners in handleFrame (see the host_tool_call case).
    */
+  private async handleServerHostTool(event: AgentEvent, toolName: string): Promise<void> {
+    const id = typeof event.id === "string" ? event.id : "";
+    if (!id) return;
+    try {
+      const result = toolName === VISUAL_TOOL.name
+        ? await handleVisualTool(this._sessionId, event.arguments, {
+          hostToolCallId: id,
+          toolCallId: typeof event.toolCallId === "string" ? event.toolCallId : undefined,
+        })
+        : await handleThreadExpressionTool(this._sessionId, toolName, event.arguments, () => getLocalReactionTargets(this._sessionFile));
+      this.proc.sendFrame({ type: "host_tool_result", id, result: { content: [{ type: "text", text: appendInteractionGuidance(this._sessionId, result.content[0].text) }] } });
+    } catch (error) {
+      this.proc.sendFrame({
+        type: "host_tool_result",
+        id,
+        isError: true,
+        result: { content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }] },
+      });
+    }
+  }
+
+  /** Settle a host_tool_call the UI did not register (or arrived with no
+   * attached listener) with an explicit error so its agent turn cannot hang. */
   private rejectUnexpectedHostTool(event: AgentEvent): void {
     const id = typeof event.id === "string" ? event.id : "";
     if (!id) return;
@@ -726,6 +854,7 @@ export class AgentSessionWrapper {
 
   onEvent(listener: EventListener): () => void {
     this.listeners.push(listener);
+    listener({ type: "web_goal_updated", goal: this.goal });
     const now = Date.now();
     for (const [id, event] of this.pendingUiRequests) {
       const expiresAt = event.expiresAt as number | undefined;
@@ -862,6 +991,7 @@ export class AgentSessionWrapper {
       fastModeEnabled: state.fastModeEnabled ?? state.fastMode ?? this.fastModeEnabled,
       fastModeActive: state.fastModeActive,
       todoPhases: state.todoPhases ?? [],
+      goal: this.goal,
       extensionStatuses: Array.from(this.extensionStatuses, ([key, text]) => ({ key, text })),
       extensionWidgets: Array.from(this.extensionWidgets.values()),
     };
@@ -873,6 +1003,9 @@ export class AgentSessionWrapper {
     const oldId = this._sessionId;
     const state = await this.proc.sendCommand<RpcSessionState>({ type: "get_state" });
     this.applyIdentity(state);
+    this.goal = getSessionGoal(this._sessionId);
+    if (this.goal?.status === "active") this.updateGoal({ ...this.goal, status: "paused" });
+    this.emit({ type: "web_goal_updated", goal: this.goal });
     if (oldId && oldId !== this._sessionId) {
       this.onIdentityChangeCallback?.(oldId, this._sessionId);
     }
@@ -884,6 +1017,7 @@ export class AgentSessionWrapper {
    * omp-web's `reload`: extensions, skills, prompts, and tools are rediscovered
    * on boot, matching a fresh CLI launch. */
   private async restart(): Promise<void> {
+    if (this.goal?.status === "active") this.updateGoal({ ...this.goal, status: "paused", summary: "Session reloaded; use /goal resume to continue." });
     if (this.restarting) throw new WebRpcError(RESTARTING_MESSAGE, "session_restarting");
     const sessionFile = this._sessionFile;
     const resumable = !!sessionFile && existsSync(sessionFile);
@@ -919,6 +1053,7 @@ export class AgentSessionWrapper {
         // The replacement process starts with subscriptions disabled; restore
         // the live roster/transcript event stream before reading its state.
         await proc.sendCommand({ type: "set_subagent_subscription", level: "events" }).catch(() => {});
+        await proc.sendCommand({ type: "set_host_tools", tools: [...this.browserTools, ...SERVER_HOST_TOOLS, GOAL_TOOL, SET_GOAL_TOOL] });
         const state = await proc.sendCommand<RpcSessionState>({ type: "get_state" });
         this.applyIdentity(state);
       } catch (error) {
@@ -942,6 +1077,9 @@ export class AgentSessionWrapper {
     if (!this.isAlive()) throw new Error("Session is no longer running");
     this.resetIdleTimer();
     const type = command.type as string;
+    if (["abort", "abort_and_prompt", "abort_compaction", "fork", "new_session", "switch_session"].includes(type) && this.goal?.status === "active") {
+      this.updateGoal({ ...this.goal, status: "paused", summary: "Paused by user." });
+    }
 
     if (type === "prompt" || type === "steer" || type === "follow_up") {
       const imageError = validateAgentImages(command.images);
@@ -952,7 +1090,37 @@ export class AgentSessionWrapper {
     if (unsupported) throw new RpcCommandError(type, unsupported, "unsupported");
 
     switch (type) {
+      case "get_goal":
+        return this.goal;
+      case "set_goal": {
+        const action = command.action;
+        if (action === "clear") { this.updateGoal(null); return null; }
+        if (action === "pause") {
+          if (this.goal?.status === "active") this.updateGoal({ ...this.goal, status: "paused", summary: "Paused by user. The current turn may finish." });
+          return this.goal;
+        }
+        if (action !== "start" && action !== "resume") throw new Error("Unknown goal action");
+        if (this.isRunning()) throw new Error("Stop the current turn before starting or resuming a goal.");
+        if (action === "start" && (typeof command.objective !== "string" || !command.objective.trim())) throw new Error("A goal objective is required.");
+        if (action === "resume" && !this.goal) throw new Error("No goal to resume.");
+        const goal: ActiveGoal = action === "start"
+          ? { id: randomUUID(), objective: (command.objective as string).trim(), startedAt: Date.now(), status: "active" }
+          : { ...this.goal!, status: "active", summary: undefined };
+        this.updateGoal(goal);
+        this.promptRunning = true;
+        try {
+          await this.proc.sendCommand({ type: "set_host_tools", tools: [...this.browserTools, ...SERVER_HOST_TOOLS, GOAL_TOOL, SET_GOAL_TOOL] });
+          if (!this.isAlive() || this.goal !== goal) { this.promptRunning = false; return this.goal; }
+          await this.send({ type: "prompt", message: goalPrompt(goal) });
+        } catch (error) {
+          this.promptRunning = false;
+          if (this.goal === goal) this.updateGoal({ ...goal, status: "paused", summary: String(error) });
+          throw error;
+        }
+        return this.goal;
+      }
       case "prompt": {
+        if (this.goalContinuation) { clearImmediate(this.goalContinuation); this.goalContinuation = null; }
         if (this.bashRunning) {
           throw new Error("Cannot send a prompt while a shell command is running");
         }
@@ -1140,9 +1308,10 @@ export class AgentSessionWrapper {
 
       case "set_host_tools": {
         const tools = Array.isArray(command.tools) ? command.tools as Array<{ name?: unknown; [key: string]: unknown }> : [];
-        const valid = tools.filter((t) => typeof t.name === "string" && t.name);
+        const valid = tools.filter((t) => typeof t.name === "string" && t.name && !SERVER_HOST_TOOL_NAMES.has(t.name) && t.name !== GOAL_TOOL.name && t.name !== SET_GOAL_TOOL.name);
+        this.browserTools = valid;
         this.hostToolNames = new Set(valid.map((t) => t.name as string));
-        await this.proc.sendCommand({ type: "set_host_tools", tools: valid });
+        await this.proc.sendCommand({ type: "set_host_tools", tools: [...valid, ...SERVER_HOST_TOOLS, GOAL_TOOL, SET_GOAL_TOOL] });
         return null;
       }
 
@@ -1193,6 +1362,7 @@ export class AgentSessionWrapper {
     // can overlap the old child's shutdown (see startRpcSession).
     if (this.destroyPromise) return this.destroyPromise;
     if (!this._alive) return;
+    if (this.goalContinuation) { clearImmediate(this.goalContinuation); this.goalContinuation = null; }
     this._alive = false;
     if (this.idleTimer) clearTimeout(this.idleTimer);
     if (this.sessionFileSignalTimer) {
@@ -1270,6 +1440,9 @@ export function getRunningRpcSessionIds(): string[] {
   }
   return [...ids];
 }
+export function getRunningRpcSessionActivity(): Record<string, number | null> {
+  return Object.fromEntries([...getRegistry()].filter(([, session]) => session.isRunning()).map(([id, session]) => [session.sessionId || id, session.runningSince]));
+}
 
 /** Stop all live omp children after an explicit runtime update. The browser will
  * reconnect sessions on demand and start them with the updated executable. */
@@ -1295,7 +1468,7 @@ export async function restoreActiveRpcSessions(): Promise<number> {
         saved.advisor,
         header?.cwd,
       );
-      if (saved.turnActive) {
+      if (saved.turnActive && !getSessionGoal(saved.sessionId)) {
         await session.send({ type: "prompt", message: INTERRUPTED_TURN_RECOVERY_PROMPT });
       }
     }),

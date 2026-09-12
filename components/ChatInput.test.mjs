@@ -11,7 +11,7 @@ const jiti = createJiti(import.meta.url, {
 const { ChatInput, ModelErrorBanner, filterModelOptions } = await jiti.import("./ChatInput.tsx");
 const { setDraft, clearDraft } = await jiti.import("@/lib/draft-store");
 
-test("shows Queue instead of Stop for typed text during a run", () => {
+test("shows Send (stop+send) instead of Stop for typed text during a run", () => {
   const draftKey = "chat-input-queue-action-test";
   setDraft(draftKey, { value: "Continue after the current run", images: [], files: [] });
   try {
@@ -19,15 +19,16 @@ test("shows Queue instead of Stop for typed text during a run", () => {
       React.createElement(ChatInput, {
         onSend() {},
         onAbort() {},
-        onFollowUp() {},
+        onInterruptAndReply: async () => true,
         isStreaming: true,
         draftKey,
       }),
     );
 
-    assert.match(html, />(Queue|chatInput\.queue)</);
-    assert.match(html, /title="(Queue this message after the agent finishes|chatInput\.queueMessage)"/);
-    assert.doesNotMatch(html, />(Stop|chatInput\.stop)</);
+    assert.match(html, /aria-label="(Send|chatInput\.send)"/);
+    assert.match(html, /title="(Interrupt the current run and inject this message now|chatInput\.steerNowTitle)"/);
+    assert.doesNotMatch(html, />(Queue|chatInput\.queue)</);
+    assert.doesNotMatch(html, />(Stop agent|chatInput\.stopAgent)</);
   } finally {
     clearDraft(draftKey);
   }
@@ -68,7 +69,7 @@ test("keeps the model selector visible when a model error leaves no options", ()
 });
 
 
-test("renders goal, planning, and advisor indicators at the composer", () => {
+test("renders goal and planning indicators at the composer", () => {
   const html = renderToStaticMarkup(
     React.createElement(ChatInput, {
       onSend() {},
@@ -78,7 +79,7 @@ test("renders goal, planning, and advisor indicators at the composer", () => {
       model: { provider: "test", modelId: "model" },
       modelList: [{ provider: "test", modelId: "model", id: "model", name: "Test model" }],
       modelNames: {},
-      activeGoal: { objective: "Ship the active goal bar", startedAt: 0 },
+      activeGoal: { id: "goal-test", objective: "Ship the active goal bar", startedAt: 0, status: "blocked" },
       activePlan: { objective: "Plan the implementation" },
       advisorEnabled: true,
       onAdvisorChange() {},
@@ -86,37 +87,40 @@ test("renders goal, planning, and advisor indicators at the composer", () => {
   );
 
   assert.match(html, /Ship the active goal bar/);
+  assert.match(html, /(Goal blocked|chatInput\.goalBlocked)/);
+  assert.doesNotMatch(html, /(Goal active|chatInput\.goalActive)/);
   assert.match(html, /(Planning in progress|chatInput\.planningInProgress)/);
-  // The per-chat advisor toggle renders pressed with its disable title.
-  assert.match(html, /aria-pressed="true"/);
-  assert.match(html, /title="(Disable advisor for this chat|chatInput\.advisorDisableTitle|Advisor: [^"]*)"/);
 });
 
-test("renders the compact toolbar action", () => {
+test("renders the context ring with real usage and a compact action", () => {
   const html = renderToStaticMarkup(
     React.createElement(ChatInput, {
       onSend() {},
       onAbort() {},
       onCompact() {},
+      contextUsage: { tokens: 149510, contextWindow: 1000000, percent: 14.951 },
       isStreaming: false,
     }),
   );
 
-  assert.match(html, /title="(Compact context|chatInput\.compactContext)"/);
+  assert.match(html, /aria-label="(Context usage|chatInput\.contextUsageTitle)"/);
+  assert.match(html, /class="composer-ring-button"/);
+  // Ring draws the real fraction (14.951% ≈ 15% used): Sunburst circle with a
+  // dash offset; the labelled Compact action lives in the ring's popover.
+  assert.match(html, /stroke-dasharray="50\.27"/);
+  assert.match(html, /title="(15% used|chatInput\.contextPercent)"/);
 });
 
-test("shows the advisor thunder indicator with the reviewing model and reasoning", () => {
+test("hides the ring when there is no usage data and no compact action", () => {
   const html = renderToStaticMarkup(
     React.createElement(ChatInput, {
       onSend() {},
       onAbort() {},
-      isStreaming: true,
-      advisorActive: true,
-      advisorModel: { name: "GPT-5.6 Luna", reasoning: "xhigh" },
+      isStreaming: false,
     }),
   );
 
-  assert.match(html, /aria-label="[^"]*GPT-5\.6 Luna[^"]*xhigh[^"]*"/);
+  assert.doesNotMatch(html, /composer-ring-button/);
 });
 
 test("filters model options by display name, identifier, and provider", () => {
@@ -129,19 +133,6 @@ test("filters model options by display name, identifier, and provider", () => {
   assert.deepEqual(filterModelOptions(options, "5.2", "en"), [options[0]]);
   assert.deepEqual(filterModelOptions(options, "OPENAI", "en"), [options[0]]);
   assert.equal(filterModelOptions(options, "   ", "en"), options);
-});
-test("queued slash commands gate /advisor behind the per-chat toggle", async () => {
-  const { readFile } = await import("node:fs/promises");
-  const source = await readFile(new URL("./ChatInput.tsx", import.meta.url), "utf8");
-  const sendQueued = source.slice(
-    source.indexOf("const sendQueued = useCallback"),
-    source.indexOf("const primaryActionQueuesMessage"),
-  );
-  const guard = sendQueued.indexOf('commandName === "advisor" && !advisorEnabled');
-  const expansion = sendQueued.indexOf("expandWebSlashCommand(msg)");
-
-  assert.ok(guard > 0, "advisor guard missing from sendQueued");
-  assert.ok(expansion > guard, "advisor guard must run before command expansion");
 });
 
 test("renders single queued prompt in compact bar", () => {

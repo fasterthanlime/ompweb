@@ -6,6 +6,7 @@ import {
   listAllSessionInfos,
   loadSessionFile,
   readSessionHeaderSync,
+  resolveBlobRefsInEntries,
   type OmpSessionInfo,
 } from "./omp/session-files";
 import type {
@@ -16,6 +17,7 @@ import type {
   SessionEntry,
   SessionHeader,
   SessionInfo,
+  SessionPagination,
 } from "./types";
 import { normalizeToolCalls } from "./normalize";
 import { isRecord } from "./type-guards";
@@ -466,28 +468,175 @@ export function buildSessionContext(
   return { messages, entryIds, thinkingLevel, model, todoPhases: getTodoPhasesFromEntries(entries, leafId) };
 }
 
+interface SessionPathForPage {
+  path: SessionEntry[];
+  leafId: string | null;
+  displayPath: SessionEntry[];
+}
+
+function sessionPathForPage(entries: SessionEntry[], requestedLeafId?: string | null): SessionPathForPage {
+  if (requestedLeafId === null) return { path: [], leafId: null, displayPath: [] };
+  const byId = new Map(entries.map((entry) => [entry.id, entry]));
+  let leaf = requestedLeafId ? byId.get(requestedLeafId) : entries[entries.length - 1];
+  if (!leaf) leaf = entries[entries.length - 1];
+  if (!leaf) return { path: [], leafId: null, displayPath: [] };
+
+  const path: SessionEntry[] = [];
+  const seen = new Set<string>();
+  let current: SessionEntry | undefined = leaf;
+  while (current && !seen.has(current.id)) {
+    seen.add(current.id);
+    path.push(current);
+    current = current.parentId ? byId.get(current.parentId) : undefined;
+  }
+  path.reverse();
+
+  // Pagination is the read-only transcript view: unlike the active agent
+  // context, it must not discard entries hidden before compaction. Keep the
+  // complete selected branch so scrolling older pages cannot silently lose
+  // history; compaction entries remain in their persisted position and are
+  // rendered as summaries by the page converter.
+  return { path, leafId: leaf.id, displayPath: path };
+}
+
+function isDisplayEntry(entry: SessionEntry): boolean {
+  if (entry.type === "message") return isRecord(entry.message);
+  if (entry.type === "compaction") return true;
+  if (entry.type === "branch_summary") return Boolean(entry.summary);
+  return entry.type === "custom_message";
+}
+
+function entryMessageRole(entry: SessionEntry): string | undefined {
+  return entry.type === "message" && isRecord(entry.message) && typeof entry.message.role === "string"
+    ? entry.message.role
+    : undefined;
+}
+
+function toolCallIds(entry: SessionEntry): Set<string> {
+  const ids = new Set<string>();
+  if (entry.type !== "message" || !isRecord(entry.message) || !Array.isArray(entry.message.content)) return ids;
+  for (const block of entry.message.content) {
+    if (!isRecord(block) || block.type !== "toolCall") continue;
+    const id = typeof block.toolCallId === "string"
+      ? block.toolCallId
+      : typeof block.id === "string" ? block.id : undefined;
+    if (id) ids.add(id);
+  }
+  return ids;
+}
+
+function pageBoundaryNeedsPair(previous: SessionEntry, current: SessionEntry): boolean {
+  if (entryMessageRole(current) === "toolResult" && entryMessageRole(previous) === "toolResult") return true;
+  if (entryMessageRole(current) === "toolResult" && entryMessageRole(previous) === "assistant") {
+    const resultId = current.type === "message" && isRecord(current.message) && typeof current.message.toolCallId === "string"
+      ? current.message.toolCallId
+      : undefined;
+    return resultId !== undefined && toolCallIds(previous).has(resultId);
+  }
+  // Keep a user request with the assistant turn that immediately follows it.
+  return entryMessageRole(current) === "assistant" && entryMessageRole(previous) === "user";
+}
+
+function firstUserText(entry: SessionEntry): string | undefined {
+  if (entry.type !== "message" || !isRecord(entry.message) || entry.message.role !== "user") return undefined;
+  const content = entry.message.content;
+  if (typeof content === "string") return content || "(no messages)";
+  if (Array.isArray(content)) {
+    const text = content.find((block) => isRecord(block) && block.type === "text" && typeof block.text === "string");
+    if (isRecord(text) && typeof text.text === "string" && text.text) return text.text;
+  }
+  return "(no messages)";
+}
+
+export interface SessionContextPage {
+  context: SessionContext;
+  leafId: string | null;
+  totalMessages: number;
+  firstMessage: string;
+  pagination: SessionPagination;
+}
+
+/**
+ * Build one bounded history page without resolving blobs in historical
+ * entries. The caller supplies the cached, unresolved parse; only selected
+ * entries are cloned and blob-resolved before UI conversion.
+ */
+export function buildSessionContextPage(
+  entries: SessionEntry[],
+  requestedLeafId: string | null | undefined,
+  before: string | null | undefined,
+  limit: number,
+  options: { deferThinking?: boolean; deferToolResultImages?: boolean } = {},
+): SessionContextPage {
+  const selected = sessionPathForPage(entries, requestedLeafId);
+  const displayEntries = selected.displayPath.filter(isDisplayEntry);
+  const cursorIndex = before === undefined || before === null
+    ? displayEntries.length
+    : displayEntries.findIndex((entry) => entry.id === before);
+  if (before !== undefined && before !== null && cursorIndex < 0) {
+    throw new Error("Invalid session page cursor");
+  }
+
+  const end = cursorIndex;
+  let start = Math.max(0, end - limit);
+  const maxPageEntries = limit + 8;
+  while (start > 0 && end - start < maxPageEntries && pageBoundaryNeedsPair(displayEntries[start - 1], displayEntries[start])) start -= 1;
+  const pageEnd = end;
+  const rawPageEntries = displayEntries.slice(start, pageEnd).map((entry) => structuredClone(entry));
+  resolveBlobRefsInEntries(rawPageEntries, { skipToolResultImages: options.deferToolResultImages });
+  const messages: AgentMessage[] = [];
+  const entryIds: string[] = [];
+  for (const entry of rawPageEntries) {
+    const message = entry.type === "compaction"
+      ? compactionUiMessage(entry, entry.id === selected.displayPath.findLast((item) => item.type === "compaction")?.id)
+      : entryToUiMessage(entry, options);
+    if (message) {
+      messages.push(message);
+      entryIds.push(entry.id);
+    }
+  }
+
+  let thinkingLevel = "off";
+  const models: Record<string, string> = {};
+  let hasExplicitDefaultModel = false;
+  for (const entry of selected.path) {
+    if (entry.type === "thinking_level_change") thinkingLevel = entry.thinkingLevel ?? "off";
+    else if (entry.type === "model_change") {
+      if (entry.model) {
+        const role = entry.role ?? "default";
+        models[role] = entry.model;
+        if (role === "default") hasExplicitDefaultModel = true;
+      } else if (entry.provider && entry.modelId) {
+        models.default = `${entry.provider}/${entry.modelId}`;
+        hasExplicitDefaultModel = true;
+      }
+    } else if (entry.type === "message" && isRecord(entry.message) && entry.message.role === "assistant" && !hasExplicitDefaultModel && entry.message.provider && entry.message.model) {
+      models.default = `${entry.message.provider}/${entry.message.model}`;
+    }
+  }
+  let model: SessionContext["model"] = null;
+  if (models.default) {
+    const separator = models.default.indexOf("/");
+    model = separator > 0
+      ? { provider: models.default.slice(0, separator), modelId: models.default.slice(separator + 1) }
+      : { provider: "", modelId: models.default };
+  }
+  const firstMessage = displayEntries.map(firstUserText).find((text): text is string => text !== undefined) ?? "(no messages)";
+  return {
+    context: { messages, entryIds, thinkingLevel, model, todoPhases: getTodoPhasesFromEntries(entries, selected.leafId) },
+    leafId: selected.leafId,
+    totalMessages: displayEntries.length,
+    firstMessage,
+    pagination: { hasMore: start > 0, before: rawPageEntries[0]?.id ?? null },
+  };
+}
+
+
 function parseEntryTimestamp(timestamp: string): number | undefined {
   const parsed = Date.parse(timestamp);
   return Number.isNaN(parsed) ? undefined : parsed;
 }
 
-function base64ImageInfo(block: unknown): { bytes: number; mime?: string } | null {
-  if (!isRecord(block) || block.type !== "image") return null;
-
-  let data: string | undefined;
-  let mime: string | undefined;
-  if (typeof block.data === "string") {
-    data = block.data;
-    mime = typeof block.mimeType === "string" ? block.mimeType : undefined;
-  } else if (isRecord(block.source) && block.source.type === "base64" && typeof block.source.data === "string") {
-    data = block.source.data;
-    mime = typeof block.source.media_type === "string" ? block.source.media_type : undefined;
-  }
-  if (!data) return null;
-
-  const padding = data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0;
-  return { bytes: Math.max(0, Math.floor(data.length * 3 / 4) - padding), mime };
-}
 
 /**
  * toolResult `details` is provider/tool-internal metadata that dominates real
@@ -605,32 +754,18 @@ function stripToolResultDetails(message: AgentMessage): AgentMessage {
   return rest;
 }
 
-function omitToolResultBase64Images(message: AgentMessage): AgentMessage {
+function deferToolResultImages(message: AgentMessage, entryId: string): AgentMessage {
   if (message.role !== "toolResult") return message;
   // Shape-malformed-but-JSON-valid files can carry a string content here
   // (import accepts arbitrary content); the loader tolerates such lines, so
   // the converter must too instead of crashing the whole session view.
   if (!Array.isArray(message.content)) return message;
 
-  let omitted = 0;
-  let bytes = 0;
-  const mimes = new Set<string>();
-  const content = message.content.filter((block) => {
-    const image = base64ImageInfo(block);
-    if (!image) return true;
-    omitted += 1;
-    bytes += image.bytes;
-    if (image.mime) mimes.add(image.mime);
-    return false;
-  });
-  if (omitted === 0) return message;
-
-  const mimeText = mimes.size > 0 ? `: ${[...mimes].join(", ")}` : "";
-  content.push({
-    type: "text",
-    text: `[${omitted} tool result image${omitted === 1 ? "" : "s"} omitted from initial history payload${mimeText}, ~${bytes} bytes]`,
-  });
-  return { ...message, content };
+  return { ...message, content: message.content.map((block, blockIndex) => {
+    if (block.type !== "image") return block;
+    if (block.source?.type === "url") return block;
+    return { type: "image" as const, deferredImage: { entryId, blockIndex } };
+  }) };
 }
 
 function compactionUiMessage(entry: CompactionEntry, active: boolean): CustomMessage {
@@ -703,7 +838,7 @@ export function entryToUiMessage(
         };
       }
       const normalized = options.deferToolResultImages
-        ? omitToolResultBase64Images(normalizeToolCalls(raw))
+        ? deferToolResultImages(normalizeToolCalls(raw), entry.id)
         : normalizeToolCalls(raw);
       const message = stripToolResultDetails(normalized);
       if (!options.deferThinking || message.role !== "assistant") return message;

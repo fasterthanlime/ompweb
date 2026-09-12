@@ -9,7 +9,7 @@ import { RpcCommandError } from "@/lib/omp/rpc-process";
 import { parseJsonWithinLimit, RequestBodyTooLargeError } from "@/lib/bounded-form-data";
 import { setSessionAdvisorEnabled } from "@/lib/session-preferences";
 
-const MAX_NEW_AGENT_REQUEST_BYTES = 4 * 1024 * 1024;
+const MAX_NEW_AGENT_REQUEST_BYTES = 16 * 1024 * 1024;
 
 function newSessionErrorResponse(error: unknown) {
   if (error instanceof RequestBodyTooLargeError) {

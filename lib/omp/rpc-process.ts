@@ -3,6 +3,8 @@ import { createInterface } from "readline";
 import { sanitizeProjectCommandEnvironment } from "../project-command-env";
 import { resolveOmpBin } from "./omp-cli";
 import { encodeRpcFrames, RpcFrameDecoder, type RpcFrameRecord, type RpcProtocolVersion } from "./rpc-frame";
+import { sshRpcArguments } from "../remote-targets";
+import { THREAD_INTERACTION_GUIDANCE } from "../web-mode-state";
 
 /**
  * Process + protocol layer for `omp --mode rpc-ui` (NDJSON over stdio).
@@ -47,6 +49,7 @@ interface PendingCommand {
 export interface RpcProcessOptions {
   /** Working directory for the agent (also passed as --cwd). */
   cwd: string;
+  ssh?: { destination: string; ompBin?: string };
   /** Extra CLI args appended after the base `--mode rpc-ui --cwd <cwd>`. */
   extraArgs?: string[];
   /** Environment overrides merged over process.env. */
@@ -86,16 +89,17 @@ export class RpcProcess {
   constructor(options: RpcProcessOptions) {
     const resolveBin = options.dependencies?.resolveOmpBin ?? resolveOmpBin;
     this.spawnProcess = options.dependencies?.spawn ?? spawn;
-    const bin = resolveBin();
+    const bin = options.ssh ? "ssh" : resolveBin();
     if (!bin) {
       throw new Error("omp binary not found. Install oh-my-pi or set OMP_WEB_OMP_BIN.");
     }
     this.cwd = options.cwd;
     if (options.onFrame) this.frameListeners.add(options.onFrame);
 
-    const args = ["--mode", "rpc-ui", "--cwd", options.cwd, ...(options.extraArgs ?? [])];
+    const ompArgs = ["--mode", "rpc-ui", "--cwd", options.cwd, "--append-system-prompt", THREAD_INTERACTION_GUIDANCE, ...(options.extraArgs ?? [])];
+    const args = options.ssh ? sshRpcArguments(options.ssh.destination, options.ssh.ompBin ?? "omp", ompArgs) : ompArgs;
     this.child = this.spawnProcess(bin, args, {
-      cwd: options.cwd,
+      cwd: options.ssh ? process.cwd() : options.cwd,
       env: sanitizeProjectCommandEnvironment({ ...process.env, ...options.env }),
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,

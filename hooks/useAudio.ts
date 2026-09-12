@@ -54,6 +54,16 @@ export function useAudio() {
   // autoplay policy suspends it (contexts created outside user gestures
   // start in "suspended" state and produce no sound).
   const ctxRef = useRef<AudioContext | null>(null);
+  useEffect(() => {
+    const close = () => {
+      const context = ctxRef.current;
+      ctxRef.current = null;
+      if (context && context.state !== "closed") void context.close().catch(() => {});
+    };
+    const onVisibility = () => { if (document.visibilityState === "hidden") close(); };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => { document.removeEventListener("visibilitychange", onVisibility); close(); };
+  }, []);
   const getCtx = useCallback((): AudioContext | null => {
     if (ctxRef.current && ctxRef.current.state !== "closed") return ctxRef.current;
     try {

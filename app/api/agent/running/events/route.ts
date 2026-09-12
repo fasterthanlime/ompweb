@@ -1,4 +1,4 @@
-import { getRunningRpcSessionIds, subscribeRunningSessions } from "@/lib/rpc-manager";
+import { getRunningRpcSessionIds, getRunningRpcSessionActivity, subscribeRunningSessions } from "@/lib/rpc-manager";
 import { subscribeSessionFileChanges } from "@/lib/session-watcher";
 
 export const dynamic = "force-dynamic";
@@ -24,6 +24,7 @@ export async function GET(req: Request) {
           encode({
             type: "running",
             runningSessionIds: ids,
+            runningSince: getRunningRpcSessionActivity(),
             ...(refreshSessionList ? { refreshSessionList: true } : {}),
           });
         } catch {
@@ -45,7 +46,7 @@ export async function GET(req: Request) {
 
       // Initial snapshot so the client renders the correct state immediately.
       // (A duplicate frame here is harmless: the client just sets the same set.)
-      encode({ type: "running", runningSessionIds: getRunningRpcSessionIds() });
+      encode({ type: "running", runningSessionIds: getRunningRpcSessionIds(), runningSince: getRunningRpcSessionActivity() });
 
       // Heartbeat to keep the connection alive through proxies/timeouts.
       const heartbeat = setInterval(() => {

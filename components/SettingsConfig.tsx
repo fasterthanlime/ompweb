@@ -1,12 +1,13 @@
 "use client";
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, useTransition, cloneElement, isValidElement, type ReactElement, type ReactNode } from "react";
-import { getSubmitDuringRunBehavior, setSubmitDuringRunBehavior, type SubmitDuringRunBehavior } from "@/lib/composer-prefs";
 import dynamic from "next/dynamic";
 import { Copy, ExternalLink, RefreshCw, RotateCcw, Search, AlertCircle } from "lucide-react";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/primitives";
 import { SettingsTabs, type SettingsTab, SETTINGS_CATEGORIES, getNormalizedActive } from "./SettingsTabs";
+import { useCelebrationsPreference } from "./MessageReactions";
+import { DICTATION_DISPLAY_KEY, readDictationDisplayMode, type DictationDisplayMode } from "@/lib/dictation-display";
 import { useI18n } from "@/lib/i18n";
 import { copyText } from "@/lib/clipboard";
 
@@ -115,7 +116,7 @@ const SETTING_INDEX: SettingIndexEntry[] = [
   // Interface & Behavior
   { id: "keep-tool-calls-collapsed", tab: "general", sectionKey: "settingsConfig.interfaceBehavior", labelKey: "settingsConfig.keepToolCallsCollapsed", descKey: "settingsConfig.keepToolCallsCollapsedDesc", fallbackSection: "Interface & Behavior", fallbackLabel: "Keep tool calls collapsed", fallbackDesc: "Show only compact headers while tools execute.", scope: "UI" },
   { id: "completion-sound", tab: "general", sectionKey: "settingsConfig.interfaceBehavior", labelKey: "settingsConfig.completionSound", descKey: "settingsConfig.completionSoundDesc", fallbackSection: "Interface & Behavior", fallbackLabel: "Completion sound", fallbackDesc: "Play a tone when the agent completes a run.", scope: "UI" },
-  { id: "message-during-active-run", tab: "general", sectionKey: "settingsConfig.interfaceBehavior", labelKey: "settingsConfig.messageDuringActiveRun", descKey: "settingsConfig.messageDuringActiveRunDesc", fallbackSection: "Interface & Behavior", fallbackLabel: "Message during active run", fallbackDesc: "What composer does on submit while agent runs. Steer interrupts; Queue follow-up delivers after finish.", scope: "UI" },
+  { id: "message-celebrations", tab: "general", sectionKey: "settingsConfig.interfaceBehavior", labelKey: "settingsConfig.messageCelebrations", descKey: "settingsConfig.messageCelebrationsDesc", fallbackSection: "Interface & Behavior", fallbackLabel: "Message celebrations", fallbackDesc: "Allow brief celebration effects from the message reaction menu.", scope: "UI" },
   // Tool Safety & Approvals
   { id: "approval-mode", tab: "safety", sectionKey: "settingsConfig.toolSafetyApprovals", labelKey: "settingsConfig.approvalMode", descKey: "settingsConfig.approvalModeDesc", fallbackSection: "Tool Safety & Approvals", fallbackLabel: "Approval Mode", fallbackDesc: "Choose when OMP asks before tool calls.", scope: "Native OMP" },
   { id: "bash-override", tab: "safety", sectionKey: "settingsConfig.toolSafetyApprovals", labelKey: "settingsConfig.bashOverride", descKey: "settingsConfig.bashOverrideDesc", fallbackSection: "Tool Safety & Approvals", fallbackLabel: "Bash Override", fallbackDesc: "Override default approval policy specifically for terminal commands.", scope: "Native OMP" },
@@ -343,9 +344,12 @@ export function SettingsConfig({ activeTab, toolCallsDefaultCollapsed, onToolCal
   const isMobile = useIsMobile();
   const { t } = useI18n();
   const workspaceReady = cwd !== null;
+  const [celebrationsEnabled, setCelebrationsEnabled] = useCelebrationsPreference();
+  const [dictationMode, setDictationMode] = useState<DictationDisplayMode>(readDictationDisplayMode);
+  const [stableWordsAvailable, setStableWordsAvailable] = useState(false);
+  useEffect(() => { void fetch("/api/dictation/live").then(response => response.json()).then(config => setStableWordsAvailable(config.supportedDisplayModes?.includes("stable_words") === true)).catch(() => {}); }, []);
   const [searchQuery, setSearchQuery] = useState("");
   const [highlightId, setHighlightId] = useState<string | null>(null);
-  const [submitBehavior, setSubmitBehavior] = useState<SubmitDuringRunBehavior>(() => getSubmitDuringRunBehavior());
   const [soundEnabled, setSoundEnabled] = useState<boolean>(() => {
     if (typeof window === "undefined") return true;
     try {
@@ -600,30 +604,19 @@ export function SettingsConfig({ activeTab, toolCallsDefaultCollapsed, onToolCal
                     <ToggleSwitch checked={toolCallsDefaultCollapsed} onChange={onToolCallsDefaultCollapsedChange} />
                   </NativeSetting>
                   <NativeSetting searchId="completion-sound" label={t("settingsConfig.completionSound")} description={t("settingsConfig.completionSoundDesc")} scope="UI">
-                    <ToggleSwitch
-                      checked={soundEnabled}
-                      onChange={(next) => {
-                        setSoundEnabled(next);
-                        try { localStorage.setItem("omp-sound-enabled", String(next)); } catch { /* storage fallback */ }
-                        window.dispatchEvent(new CustomEvent("omp-sound-pref-change", { detail: next }));
-                      }}
-                    />
+                    <ToggleSwitch checked={soundEnabled} onChange={(next) => { setSoundEnabled(next); try { localStorage.setItem("omp-sound-enabled", String(next)); } catch {} window.dispatchEvent(new CustomEvent("omp-sound-pref-change", { detail: next })); }} />
                   </NativeSetting>
+                  <NativeSetting searchId="message-celebrations" label={t("settingsConfig.messageCelebrations")} description={t("settingsConfig.messageCelebrationsDesc")} scope="UI">
+                    <ToggleSwitch checked={celebrationsEnabled} onChange={setCelebrationsEnabled} />
+                  </NativeSetting>
+                  <div style={{ display: "grid", gap: 6, padding: "10px 0" }}>
+                    <label htmlFor="dictation-display-mode" style={{ fontSize: 13 }}>Dictation display</label>
+                    <select id="dictation-display-mode" value={dictationMode} onChange={event => { const mode = event.target.value as DictationDisplayMode; setDictationMode(mode); try { localStorage.setItem(DICTATION_DISPLAY_KEY, mode); } catch {} }} style={{ padding: 8, fontSize: 16, background: "var(--bg)", color: "var(--text)", border: "1px solid var(--border)", borderRadius: "var(--radius-control)" }}>
+                      <option value="immediate">Immediate</option><option value="stable_words" disabled={!stableWordsAvailable}>Stable words</option>
+                    </select>
+                    <span style={{ fontSize: 12, color: "var(--text-muted)" }}>Applies to the next recording. Stable words withholds incomplete words and dims punctuation that may still change.</span>
+                  </div>
                 </div>
-                <NativeSetting searchId="message-during-active-run" label={t("settingsConfig.messageDuringActiveRun")} description={t("settingsConfig.messageDuringActiveRunDesc")} scope="UI">
-                  <select
-                    style={nativeSelectStyle}
-                    value={submitBehavior}
-                    onChange={(event) => {
-                      const next = event.target.value as SubmitDuringRunBehavior;
-                      setSubmitDuringRunBehavior(next);
-                      setSubmitBehavior(next);
-                    }}
-                  >
-                    <option value="steer" style={nativeOptionStyle}>{t("settingsConfig.steerCurrentRun")}</option>
-                    <option value="queue" style={nativeOptionStyle}>{t("settingsConfig.queueFollowUp")}</option>
-                  </select>
-                </NativeSetting>
               </div>
             )}
 

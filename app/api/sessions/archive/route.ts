@@ -1,3 +1,4 @@
+import { listArchivedRemoteSessions, restoreRemoteSession } from "@/lib/remote-sessions";
 import { NextResponse } from "next/server";
 import { apiErrorResponse } from "@/lib/api-utils";
 import { listArchivedSessions, restoreArchivedSession } from "@/lib/omp/archive";
@@ -21,7 +22,7 @@ export async function GET() {
       size: archive.size,
       status: archive.status,
     }));
-    return NextResponse.json({ archives: response }, { headers: { "Cache-Control": "no-store" } });
+    return NextResponse.json({ archives: response, remoteArchives: listArchivedRemoteSessions().map(({id,targetId,name,cwd,archivedAt}) => ({id,targetId,name,cwd,archivedAt})) }, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     return apiErrorResponse(error);
   }
@@ -29,7 +30,8 @@ export async function GET() {
 
 export async function POST(req: Request) {
   try {
-    const body = await req.json() as { key?: unknown };
+    const body = await req.json() as { key?: unknown; remoteId?: unknown };
+    if (typeof body.remoteId === "string") { const session = restoreRemoteSession(body.remoteId); return NextResponse.json({ ok: true, sessionId: session.id, targetId: session.targetId }); }
     if (typeof body.key !== "string" || !body.key.trim()) {
       return NextResponse.json({ error: "Archive key is required", code: "archive_key_required" }, { status: 400 });
     }

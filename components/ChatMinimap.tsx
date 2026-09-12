@@ -2,6 +2,7 @@
 
 import { memo, useEffect, useRef, useState, useCallback, useMemo, RefObject } from "react";
 import type { AgentMessage, AssistantMessage, TextContent } from "@/lib/types";
+import { CHAT_MINIMAP_WIDTH } from "@/lib/chat-layout";
 
 interface Props {
   messages: AgentMessage[];
@@ -9,7 +10,7 @@ interface Props {
   messageRefs: RefObject<(HTMLDivElement | null)[]>;
 }
 
-const MINIMAP_WIDTH = 36;
+const MINIMAP_WIDTH = CHAT_MINIMAP_WIDTH;
 
 function getMessagePreview(msg: AgentMessage | Partial<AgentMessage>): string {
   if (msg.role === "user") {

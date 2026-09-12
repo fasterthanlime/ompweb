@@ -7,6 +7,7 @@ import { encodeFilePathForApi } from "@/lib/file-paths";
 import { normalizeDisplayMath, useMarkdownPlugins } from "../lib/markdown";
 import { markdownCodeRenderer } from "./MarkdownCode";
 import { ClickableImage } from "./ImageLightbox";
+import { streamingEmphasis } from "@/lib/streaming-emphasis";
 
 interface MarkdownBodyProps {
   children: string;
@@ -19,6 +20,7 @@ interface MarkdownBodyProps {
 export function MarkdownBody({ children, className, isStreaming, cwd, onOpenFile }: MarkdownBodyProps) {
   const normalizedMarkdown = useMemo(() => normalizeDisplayMath(children), [children]);
   const { remarkPlugins, rehypePlugins } = useMarkdownPlugins(normalizedMarkdown);
+  const displayRemarkPlugins = useMemo(() => isStreaming ? [...remarkPlugins, streamingEmphasis] : remarkPlugins, [isStreaming, remarkPlugins]);
 
   // Rebuilt only when its captured props change, not on every render.
   const components = useMemo<Components>(() => {
@@ -127,7 +129,7 @@ export function MarkdownBody({ children, className, isStreaming, cwd, onOpenFile
   return (
     <div className={["markdown-body", className].filter(Boolean).join(" ")}>
       <ReactMarkdown
-        remarkPlugins={remarkPlugins}
+        remarkPlugins={displayRemarkPlugins}
         rehypePlugins={rehypePlugins}
         components={components}
       >

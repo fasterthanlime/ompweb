@@ -2,9 +2,9 @@ import type { MetadataRoute } from "next";
 
 export default function manifest(): MetadataRoute.Manifest {
   return {
-    name: "omp web",
-    short_name: "omp web",
-    description: "Web UI for the oh-my-pi (omp) coding agent",
+    name: "Nook",
+    short_name: "Nook",
+    description: "A place to work alongside coding agents.",
     start_url: "/",
     display: "standalone",
     background_color: "#FAF9F6",

@@ -21,9 +21,14 @@ interface TodoListProps {
   collapsible?: boolean;
   /** Initial expansion when `collapsible` (default: collapsed). */
   defaultExpanded?: boolean;
+  /** Omit the section shell and header entirely so the caller (the composer
+   * strip) owns the toggle; `open` controls body visibility. */
+  headerless?: boolean;
+  /** Controlled body visibility when `headerless`. */
+  open?: boolean;
 }
 
-export function TodoList({ phases = [], collapsible = false, defaultExpanded = false }: TodoListProps) {
+export function TodoList({ phases = [], collapsible = false, defaultExpanded = false, headerless = false, open = false }: TodoListProps) {
   const { t } = useI18n();
   const [expanded, setExpanded] = useState(false);
   const [collapsed, setCollapsed] = useState(collapsible ? !defaultExpanded : false);
@@ -43,6 +48,50 @@ export function TodoList({ phases = [], collapsible = false, defaultExpanded = f
   const headerRowClass = "flex items-center gap-2 px-3 py-2 text-xs text-text-muted";
   const headerBorderClass = collapsed ? "" : "border-b border-border";
   const progress = t("chatWindow.todoProgress", { done, total: tasks.length });
+
+  const body = (
+    <>
+      <div className="grid gap-3 px-3 py-2.5 animate-slide-down">
+        {displayedPhases.map((phase, phaseIndex) => (
+          <div key={phase.id ?? `${phase.name}-${phaseIndex}`} className="grid gap-1.5">
+            <div className="text-[11px] font-medium text-text-muted">{phase.name}</div>
+            <div className="grid gap-1.5">
+              {phase.tasks.map((task, taskIndex) => (
+                <div
+                  key={task.id ?? `${task.content}-${taskIndex}`}
+                  className="flex min-w-0 items-start gap-2 text-[13px] text-text"
+                  aria-label={`${t(`chatWindow.todoStatus.${task.status}`)}: ${task.content}`}
+                >
+                  <span className="mt-0.5 shrink-0"><TodoStatusIcon status={task.status} /></span>
+                  <span className="min-w-0">
+                    <span className={task.status === "completed" || task.status === "abandoned" ? "text-text-dim line-through" : undefined}>
+                      {task.content}
+                    </span>
+                    {task.blocker && (
+                      <span className="mt-0.5 block text-[11px] text-text-muted">
+                        {t("chatWindow.todoBlocker", { blocker: task.blocker })}
+                      </span>
+                    )}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+      {(isTruncated || expanded) && (
+        <button
+          type="button"
+          className="px-3 py-2 text-left text-xs text-accent hover:text-accent-hover"
+          onClick={() => setExpanded((value) => !value)}
+        >
+          {expanded ? t("chatWindow.todoShowLess") : t("chatWindow.todoShowAll")}
+        </button>
+      )}
+    </>
+  );
+
+  if (headerless) return open ? body : null;
 
   return (
     <section
@@ -80,47 +129,7 @@ export function TodoList({ phases = [], collapsible = false, defaultExpanded = f
           <span className="ml-auto">{progress}</span>
         </div>
       )}
-      {!collapsed && (
-        <>
-      <div className="grid gap-3 px-3 py-2.5 animate-slide-down">
-        {displayedPhases.map((phase, phaseIndex) => (
-          <div key={phase.id ?? `${phase.name}-${phaseIndex}`} className="grid gap-1.5">
-            <div className="text-[11px] font-medium text-text-muted">{phase.name}</div>
-            <div className="grid gap-1.5">
-              {phase.tasks.map((task, taskIndex) => (
-                <div
-                  key={task.id ?? `${task.content}-${taskIndex}`}
-                  className="flex min-w-0 items-start gap-2 text-[13px] text-text"
-                  aria-label={`${t(`chatWindow.todoStatus.${task.status}`)}: ${task.content}`}
-                >
-                  <span className="mt-0.5 shrink-0"><TodoStatusIcon status={task.status} /></span>
-                  <span className="min-w-0">
-                    <span className={task.status === "completed" || task.status === "abandoned" ? "text-text-dim line-through" : undefined}>
-                      {task.content}
-                    </span>
-                    {task.blocker && (
-                      <span className="mt-0.5 block text-[11px] text-text-muted">
-                        {t("chatWindow.todoBlocker", { blocker: task.blocker })}
-                      </span>
-                    )}
-                  </span>
-                </div>
-              ))}
-            </div>
-          </div>
-        ))}
-      </div>
-      {(isTruncated || expanded) && (
-        <button
-          type="button"
-          className="border-t border-border px-3 py-2 text-left text-xs text-accent hover:text-accent-hover"
-          onClick={() => setExpanded((value) => !value)}
-        >
-          {expanded ? t("chatWindow.todoShowLess") : t("chatWindow.todoShowAll")}
-        </button>
-      )}
-        </>
-      )}
+      {!collapsed && body}
     </section>
   );
 }

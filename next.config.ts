@@ -21,7 +21,10 @@ const nextConfig = (phase: string): NextConfig => {
     // undici is loaded from a runtime dependency (lib/http-dispatcher.ts) to
     // honor HTTP(S)_PROXY for server-side fetch; keep it external so the
     // bundler does not inline a second copy next to the global dispatcher.
-    serverExternalPackages: ["undici"],
+    // @google/genai (dictation) ships node-targeted ESM with its own fetch
+    // machinery; bundling it into a route chunk is fragile, so keep it
+    // external and resolve it from node_modules at runtime.
+    serverExternalPackages: ["undici", "@google/genai", "ws"],
     webpack(config: Parameters<NonNullable<NextConfig["webpack"]>>[0]) {
       // Next's entrypoint tracer does not automatically reject dynamic paths
       // outside the project root. Add parent/profile patterns to its ignore list
@@ -52,7 +55,7 @@ const nextConfig = (phase: string): NextConfig => {
         { key: "X-Content-Type-Options", value: "nosniff" },
         { key: "X-Frame-Options", value: "DENY" },
         { key: "Referrer-Policy", value: "no-referrer" },
-        { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=()" },
+        { key: "Permissions-Policy", value: "camera=(), microphone=(self), geolocation=()" },
         { key: "Content-Security-Policy", value: "default-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; object-src 'none'; img-src 'self' data: blob: https:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; connect-src 'self' ws: wss:; font-src 'self' data:" },
       ];
       const headers = [

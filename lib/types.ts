@@ -42,6 +42,7 @@ export interface ImageContent {
   type: "image";
   data?: string;
   mimeType?: string;
+  deferredImage?: { entryId: string; blockIndex: number };
   source?: {
     type: "base64" | "url";
     media_type?: string;
@@ -467,4 +468,11 @@ export interface SessionContext {
   model: { provider: string; modelId: string } | null;
   /** Latest persisted todo snapshot on the selected session branch. */
   todoPhases: TodoPhase[];
+}
+
+/** Cursor metadata for bounded session history responses. */
+export interface SessionPagination {
+  hasMore: boolean;
+  /** Cursor for fetching the page immediately older than this page. */
+  before: string | null;
 }

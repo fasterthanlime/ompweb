@@ -8,7 +8,30 @@ const jiti = createJiti(import.meta.url, {
   jsx: { runtime: "automatic" },
   tsconfigPaths: true,
 });
-const { TaskBlock, CompletionBlock } = await jiti.import("./SubagentTranscriptDialog.tsx");
+const { TaskBlock, CompletionBlock, SubagentTranscriptMessages } = await jiti.import("./SubagentTranscriptDialog.tsx");
+test("renders transcript messages with shared markdown and paired tool results", () => {
+  const html = renderToStaticMarkup(React.createElement(SubagentTranscriptMessages, {
+    sessionId: null,
+    messages: [
+      { role: "user", content: "Inspect the file" },
+      { role: "assistant", content: [{ type: "toolCall", id: "call-1", name: "read", arguments: { path: "demo.ts" } }] },
+      { role: "toolResult", toolCallId: "call-1", toolName: "read", content: [{ type: "text", text: "line one\nline two" }] },
+    ],
+  }));
+  assert.match(html, /Inspect the file/);
+  assert.match(html, /read/);
+  assert.doesNotMatch(html, />U</);
+  assert.doesNotMatch(html, />R</);
+});
+
+test("does not clip long completion text", () => {
+  const longText = `${"a".repeat(500)}END`;
+  const html = renderToStaticMarkup(React.createElement(CompletionBlock, {
+    completion: longText,
+    truncated: false,
+  }));
+  assert.match(html, /END/);
+});
 
 test("renders the task as markdown with its label", () => {
   const html = renderToStaticMarkup(React.createElement(TaskBlock, {

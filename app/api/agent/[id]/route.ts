@@ -4,9 +4,9 @@ import { apiErrorResponse, resolveSessionPathOr404 } from "@/lib/api-utils";
 import { startRpcSession, getRpcSession, resolveSpawnCwdResult, WebRpcError } from "@/lib/rpc-manager";
 import { RpcCommandError } from "@/lib/omp/rpc-process";
 import { parseJsonWithinLimit, RequestBodyTooLargeError } from "@/lib/bounded-form-data";
-import { getSessionAdvisorEnabled, setSessionAdvisorEnabled } from "@/lib/session-preferences";
+import { getSessionAdvisorEnabled, setSessionAdvisorEnabled, getSessionGoal } from "@/lib/session-preferences";
 
-const MAX_AGENT_COMMAND_REQUEST_BYTES = 4 * 1024 * 1024;
+const MAX_AGENT_COMMAND_REQUEST_BYTES = 16 * 1024 * 1024;
 
 /** omp-web's own failures carry a stable code the client can localize; omp's
  * errors stay opaque English text. */
@@ -85,7 +85,7 @@ export async function GET(
   try {
     const session = getRpcSession(id);
     if (!session || !session.isAlive()) {
-      return NextResponse.json({ running: false });
+      return NextResponse.json({ running: false, state: { goal: getSessionGoal(id) } });
     }
 
     const state = await session.send({ type: "get_state" });

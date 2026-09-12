@@ -89,3 +89,46 @@ export async function parseFormDataWithinLimit(request: Request, maxBytes: numbe
   const headers = contentType ? { "content-type": contentType } : undefined;
   return new Response(new Blob(chunks), { headers }).formData();
 }
+
+/** Read a raw binary request body within a size limit, guarding chunked
+ * requests (and absent or lying Content-Length headers) too. */
+export async function parseBytesWithinLimit(request: Request, maxBytes: number): Promise<Uint8Array> {
+  const declared = declaredContentLength(request);
+  if (declared !== null && declared > maxBytes) {
+    throw new RequestBodyTooLargeError();
+  }
+
+  const reader = request.body?.getReader();
+  if (!reader) {
+    const bytes = new Uint8Array(await request.arrayBuffer());
+    if (bytes.byteLength > maxBytes) throw new RequestBodyTooLargeError();
+    return bytes;
+  }
+
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (size + value.byteLength > maxBytes) {
+        await reader.cancel().catch(() => {});
+        throw new RequestBodyTooLargeError();
+      }
+      size += value.byteLength;
+      const chunk = new Uint8Array(value.byteLength);
+      chunk.set(value);
+      chunks.push(chunk);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
+}

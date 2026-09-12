@@ -21,7 +21,7 @@ import { getToolNamesForPreset, type ToolPreset } from "@/lib/tool-presets";
 import { getPreferredToolPreset, setPreferredToolPreset } from "@/lib/tool-preset-preference";
 import { toast } from "@/components/ui/toast";
 import { expandWebSlashCommand } from "@/lib/web-slash-commands";
-import { createActiveGoal, parseActiveGoal, type ActiveGoal, type ActivePlan } from "@/lib/web-mode-state";
+import { parseActiveGoal, type ActiveGoal, type ActivePlan } from "@/lib/web-mode-state";
 import type { HostToolDefinition, HostUriSchemeDefinition, RpcAvailableSlashCommand, SessionStatsInfo, TodoPhase } from "@/lib/pi-types";
 import { isRecord } from "@/lib/type-guards";
 import { subscribeRunningSessionIds, subscribeSessionsChanged } from "@/lib/session-change-bus";
@@ -42,10 +42,16 @@ import { appendDeliveredUserMessage, deliveredUserMessageKey, reconcileTerminalM
 // history module); keep the export path stable for components.
 export type { SubagentInfo } from "@/lib/subagent-types";
 
+export interface SessionPagination {
+  hasMore: boolean;
+  before: string | null;
+}
+
 export interface SessionData {
   sessionId: string;
   filePath: string;
   tree: SessionTreeNode[];
+  info?: { messageCount?: number };
   leafId: string | null;
   context: {
     messages: AgentMessage[];
@@ -54,6 +60,41 @@ export interface SessionData {
     model: { provider: string; modelId: string } | null;
     todoPhases: TodoPhase[];
   };
+  pagination?: SessionPagination;
+}
+
+const SESSION_PAGE_SIZE = 100;
+const SESSION_WARM_CACHE_SIZE = 8;
+
+interface WarmSessionCacheEntry { data: SessionData; pagination: SessionPagination }
+const warmSessionCache = new Map<string, WarmSessionCacheEntry>();
+
+function readWarmSessionCache(sessionId: string): WarmSessionCacheEntry | null {
+  const cached = warmSessionCache.get(sessionId);
+  if (!cached) return null;
+  warmSessionCache.delete(sessionId);
+  warmSessionCache.set(sessionId, cached);
+  return cached;
+}
+
+function cacheSessionSnapshot(sessionId: string, data: SessionData, pagination: SessionPagination) {
+  const start = Math.max(0, data.context.messages.length - SESSION_PAGE_SIZE);
+  const messages = data.context.messages.slice(start);
+  const entryIds = data.context.entryIds.slice(start);
+  const cachedPagination: SessionPagination = {
+    hasMore: start > 0 || pagination.hasMore,
+    before: start > 0 ? (entryIds[0] ?? null) : pagination.before,
+  };
+  warmSessionCache.delete(sessionId);
+  warmSessionCache.set(sessionId, {
+    data: { ...data, context: { ...data.context, messages, entryIds }, pagination: cachedPagination },
+    pagination: cachedPagination,
+  });
+  while (warmSessionCache.size > SESSION_WARM_CACHE_SIZE) {
+    const oldest = warmSessionCache.keys().next().value as string | undefined;
+    if (!oldest) break;
+    warmSessionCache.delete(oldest);
+  }
 }
 
 interface StreamingState {
@@ -172,6 +213,7 @@ interface LastAssistantTextResponse {
 type AgentStateResponse = {
   // Raw get_state passthrough: the resolved model omp is actually running.
   model?: { provider: string; id: string; name?: string; reasoning?: boolean; thinking?: { efforts?: string[] } };
+  goal?: ActiveGoal | null;
   contextUsage?: { percent: number | null; contextWindow: number; tokens: number | null } | null;
   systemPrompt?: string;
   thinkingLevel?: string;
@@ -567,6 +609,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const [activeLeafId, setActiveLeafId] = useState<string | null>(null);
   const [messages, setMessages] = useState<AgentMessage[]>([]);
   const [entryIds, setEntryIds] = useState<string[]>([]);
+  const [historyPagination, setHistoryPagination] = useState<SessionPagination>({ hasMore: false, before: null });
+  const [historyLoading, setHistoryLoading] = useState(false);
   const [showPreCompactionHistory, setShowPreCompactionHistory] = useState(false);
   const [streamState, dispatch] = useReducer(streamReducer, { isStreaming: false, streamingMessage: null });
   const [agentRunning, setAgentRunning] = useState(false);
@@ -642,6 +686,14 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   // Guards stale branch/leaf context responses: two rapid navigate clicks must
   // not let the older response overwrite the newer branch's messages.
   const contextRequestSeqRef = useRef(0);
+  const sessionGenerationRef = useRef(0);
+  const historyRequestSeqRef = useRef(0);
+  const historyLoadingRef = useRef(false);
+  const historyPaginationRef = useRef<SessionPagination>({ hasMore: false, before: null });
+  const transcriptRef = useRef<{ messages: AgentMessage[]; entryIds: string[] }>({ messages: [], entryIds: [] });
+  useEffect(() => {
+    transcriptRef.current = { messages, entryIds };
+  }, [messages, entryIds]);
   // Mirror of the isCompacting state that survives render batching, so two
   // clicks in the same tick cannot double-send a compact command.
   const isCompactingRef = useRef(false);
@@ -715,6 +767,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
 
   const sessionStats = useMemo(() => {
     if (sessionStatsOverride) return sessionStatsOverride;
+    if (historyPagination.hasMore) return null;
     const tokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 };
     let cost = 0;
     let userMessages = 0;
@@ -745,23 +798,27 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       assistantMessages,
       toolCalls,
       toolResults,
-      totalMessages: messages.length,
+      // A paged transcript is not a complete lifetime stats source. Keep the
+      // visible-page counts here; the explicit stats panel uses server totals.
+      totalMessages: data?.info?.messageCount ?? messages.length,
       tokens,
       cost,
       ...(contextUsage ? { contextUsage } : {}),
     } satisfies SessionStatsInfo;
-  }, [messages, sessionStatsOverride, contextUsage, data?.filePath, session?.id, session?.name]);
+  }, [messages, sessionStatsOverride, contextUsage, data?.filePath, data?.info?.messageCount, session?.id, session?.name, historyPagination.hasMore]);
 
   // Goal mode is web-hosted because omp's native /goal is TUI-only. Keep it
   // scoped to its session so switching conversations never leaks objectives.
   useEffect(() => {
     const sid = session?.id;
     setActivePlan(null);
-    if (!sid) {
-      setActiveGoal(null);
-      return;
-    }
-    setActiveGoal(parseActiveGoal(sessionStorage.getItem(`omp-web:goal:${sid}`)));
+    setActiveGoal(null);
+    if (!sid) return;
+    let cancelled = false;
+    void fetch(`/api/agent/${encodeURIComponent(sid)}`).then(response => response.ok ? response.json() : null).then(data => {
+      if (!cancelled && data?.state && "goal" in data.state) setActiveGoal(parseActiveGoal(data.state.goal));
+    }).catch(() => {});
+    return () => { cancelled = true; };
   }, [session?.id]);
 
   // A plan request is in progress only for its current agent turn.
@@ -975,9 +1032,23 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
 
   const loadSession = useCallback(async (sid: string, showLoading = false, includeState = false, fenceRunId?: number, preserveOptimisticUser = false) => {
     let messagesLoaded = false;
+    const generation = sessionGenerationRef.current;
     try {
       if (showLoading) setLoading(true);
-      const params = new URLSearchParams({ deferThinking: "1", deferMedia: "1" });
+      const cached = showLoading ? readWarmSessionCache(sid) : null;
+      if (cached && sessionIdRef.current === sid) {
+        setData(cached.data);
+        setActiveLeafId(cached.data.leafId);
+        setMessages(cached.data.context.messages);
+        setEntryIds(cached.data.context.entryIds);
+        transcriptRef.current = { messages: cached.data.context.messages, entryIds: cached.data.context.entryIds };
+        historyPaginationRef.current = cached.pagination;
+        setHistoryPagination(cached.pagination);
+        setTodoPhases(cached.data.context.todoPhases ?? []);
+        setError(null);
+        if (showLoading) setLoading(false);
+      }
+      const params = new URLSearchParams({ limit: String(SESSION_PAGE_SIZE), deferThinking: "1", deferMedia: "1" });
       const res = await fetch(`/api/sessions/${encodeURIComponent(sid)}?${params}`);
       if (res.status === 404) {
         if (showLoading) {
@@ -990,19 +1061,36 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       }
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const d = await res.json() as SessionData;
-      if (sessionIdRef.current !== sid) return null;
+      if (sessionIdRef.current !== sid || sessionGenerationRef.current !== generation) return null;
       // A terminal reload for a finished run must not overwrite the messages
       // of a run that started while this fetch was in flight (it would delete
       // the new run's optimistic user bubble).
       if (fenceRunId !== undefined && promptRunIdRef.current !== fenceRunId) return null;
-      setData(d);
+      const nextPagination = d.pagination ?? { hasMore: false, before: null };
+      const current = transcriptRef.current;
+      const firstId = d.context.entryIds?.[0];
+      const overlap = firstId ? current.entryIds.indexOf(firstId) : -1;
+      const preserveLoadedHistory = !showLoading && overlap > 0;
+      const prefixMessages = preserveLoadedHistory ? current.messages.slice(0, overlap) : [];
+      const prefixIds = preserveLoadedHistory ? current.entryIds.slice(0, overlap) : [];
+      const authoritativeMessages = [...prefixMessages, ...d.context.messages];
+      const nextMessages = preserveOptimisticUser
+        ? reconcileTerminalMessages(authoritativeMessages, current.messages, optimisticUserMessageKeyRef.current, lateDeliveredUserKeysRef.current)
+        : authoritativeMessages;
+      const nextIds = [...prefixIds, ...(d.context.entryIds ?? [])];
+      while (nextIds.length < nextMessages.length) nextIds.push("");
+      const mergedData = { ...d, context: { ...d.context, messages: nextMessages, entryIds: nextIds } };
+      setData(mergedData);
       setActiveLeafId(d.leafId);
-      setMessages((current) => preserveOptimisticUser
-        ? reconcileTerminalMessages(d.context.messages, current, optimisticUserMessageKeyRef.current, lateDeliveredUserKeysRef.current)
-        : d.context.messages);
-      if (preserveOptimisticUser) lateDeliveredUserKeysRef.current.clear();
-      setEntryIds(d.context.entryIds ?? []);
+      setMessages(nextMessages);
+      setEntryIds(nextIds);
+      transcriptRef.current = { messages: nextMessages, entryIds: nextIds };
+      if (!preserveLoadedHistory) {
+        historyPaginationRef.current = nextPagination;
+        setHistoryPagination(nextPagination);
+      }
       setShowPreCompactionHistory(false);
+      cacheSessionSnapshot(sid, mergedData, historyPaginationRef.current);
       setTodoPhases(d.context.todoPhases ?? []);
       // Recover on-disk subagent history (task toolResults) for this session —
       // populates the composer roster for finished/past runs.
@@ -1027,7 +1115,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         const stateRes = await fetch(`/api/sessions/${encodeURIComponent(sid)}/state`);
         if (!stateRes.ok) throw new Error(`HTTP ${stateRes.status}`);
         const agentState = await stateRes.json() as { running: boolean; state?: AgentStateResponse };
-        if (sessionIdRef.current !== sid) {
+        if (sessionIdRef.current !== sid || sessionGenerationRef.current !== generation) {
           if (showLoading) setLoading(false);
           return null;
         }
@@ -1086,12 +1174,67 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       if (sessionIdRef.current !== sid || contextRequestSeqRef.current !== seq) return;
       setMessages(d.context.messages);
       setEntryIds(d.context.entryIds ?? []);
+      transcriptRef.current = { messages: d.context.messages, entryIds: d.context.entryIds ?? [] };
+      historyPaginationRef.current = { hasMore: false, before: null };
+      setHistoryPagination(historyPaginationRef.current);
       setShowPreCompactionHistory(includePreCompaction);
       setTodoPhases(d.context.todoPhases ?? []);
     } catch (e) {
       console.error("Failed to load context:", e);
     }
   }, []);
+
+  const loadOlderHistory = useCallback(async (): Promise<number> => {
+    const sid = sessionIdRef.current;
+    const page = historyPaginationRef.current;
+    if (!sid || !page.hasMore || !page.before || historyLoadingRef.current) return 0;
+    const requestSeq = ++historyRequestSeqRef.current;
+    historyLoadingRef.current = true;
+    setHistoryLoading(true);
+    try {
+      const params = new URLSearchParams({ limit: String(SESSION_PAGE_SIZE), before: page.before, deferThinking: "1", deferMedia: "1" });
+      if (activeLeafId) params.set("leafId", activeLeafId);
+      const res = await fetch(`/api/sessions/${encodeURIComponent(sid)}?${params}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const d = await res.json() as SessionData;
+      if (sessionIdRef.current !== sid || historyRequestSeqRef.current !== requestSeq) return 0;
+      const current = transcriptRef.current;
+      const incomingIds = d.context.entryIds ?? [];
+      const incomingMessages = d.context.messages ?? [];
+      const mergedPairs = [
+        ...incomingMessages.map((message, index) => ({ message, id: incomingIds[index] ?? "" })),
+        ...current.messages.map((message, index) => ({ message, id: current.entryIds[index] ?? "" })),
+      ];
+      const seen = new Set<string>();
+      const merged = mergedPairs.filter((pair) => !pair.id || !seen.has(pair.id) && (seen.add(pair.id), true));
+      const mergedMessages = merged.map((pair) => pair.message);
+      const mergedEntryIds = merged.map((pair) => pair.id);
+      transcriptRef.current = { messages: mergedMessages, entryIds: mergedEntryIds };
+      setMessages(mergedMessages);
+      setEntryIds(mergedEntryIds);
+      const nextPage = d.pagination ?? { hasMore: false, before: null };
+      historyPaginationRef.current = nextPage;
+      setHistoryPagination(nextPage);
+      setTodoPhases(d.context.todoPhases ?? []);
+      setData((previous) => previous ? {
+        ...previous,
+        tree: d.tree ?? previous.tree,
+        context: { ...previous.context, ...d.context, messages: mergedMessages, entryIds: mergedEntryIds },
+        pagination: nextPage,
+      } : d);
+      const snapshot = data ?? d;
+      cacheSessionSnapshot(sid, { ...snapshot, context: { ...snapshot.context, messages: mergedMessages, entryIds: mergedEntryIds } }, nextPage);
+      return incomingMessages.length;
+    } catch (e) {
+      console.error("Failed to load older session history:", e);
+      return 0;
+    } finally {
+      if (historyRequestSeqRef.current === requestSeq) {
+        historyLoadingRef.current = false;
+        setHistoryLoading(false);
+      }
+    }
+  }, [activeLeafId, data]);
 
   const togglePreCompactionHistory = useCallback(() => {
     const sid = sessionIdRef.current;
@@ -1774,6 +1917,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       // flight) — everything in it is stale, drop it.
       if (promptRunIdRef.current !== runId) return;
       const state = data.state;
+      if (state && "goal" in state) setActiveGoal(parseActiveGoal(state.goal));
       // Mirror compaction state unconditionally: a missed compaction_end
       // would otherwise leave the "Stop compaction" UI stuck. No state
       // (wrapper destroyed) means nothing is compacting.
@@ -1921,6 +2065,9 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
 
   const handleAgentEvent = useCallback((event: AgentEvent) => {
     switch (event.type) {
+      case "web_goal_updated":
+        setActiveGoal(parseActiveGoal(event.goal));
+        break;
       case "agent_start":
         interruptReplyPendingRef.current = false;
         agentRunningRef.current = true;
@@ -2870,12 +3017,6 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
             if (commandName === "plan") setActivePlan(null);
             return { handled: true, retainInput: true };
           }
-          if (commandName === "goal") {
-            const goal = createActiveGoal(args);
-            setActiveGoal(goal);
-            const activeSessionId = sessionIdRef.current;
-            if (activeSessionId) sessionStorage.setItem(`omp-web:goal:${activeSessionId}`, JSON.stringify(goal));
-          }
           return { handled: true };
         }
       }
@@ -3008,6 +3149,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   }, [reducedMotion]);
 
   const markUserScrollIntent = useCallback((event: Event) => {
+    if (!(event instanceof KeyboardEvent) && event.target instanceof Node && !scrollContainerRef.current?.contains(event.target)) return;
     if (event instanceof KeyboardEvent) {
       if (!SCROLL_KEYS.has(event.key)) return;
       if (event.target instanceof Element && event.target.closest("input, textarea, [contenteditable='true']")) return;
@@ -3032,8 +3174,14 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     completionScrollAllowedRef.current = end.getBoundingClientRect().bottom - container.getBoundingClientRect().bottom <= 24;
   }, []);
 
-  // Load session on mount
+  // Load session on mount. The component is keyed by session, but this
+  // generation also fences any in-flight page/state response during a rapid
+  // remount or branch transition.
   useEffect(() => {
+    sessionGenerationRef.current += 1;
+    historyRequestSeqRef.current += 1;
+    historyPaginationRef.current = { hasMore: false, before: null };
+    setHistoryPagination(historyPaginationRef.current);
     if (session) {
       sessionIdRef.current = session.id;
       loadSession(session.id, true, true).then((agentState) => {
@@ -3262,7 +3410,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
 
   return {
     // State
-    data, loading, error, activeLeafId, messages, entryIds, showPreCompactionHistory, streamState,
+    data, loading, error, activeLeafId, messages, entryIds, historyPagination, historyLoading, loadOlderHistory, showPreCompactionHistory, streamState,
     agentRunning, modelNames, modelList, modelsLoading, modelError, modelThinkingLevels, modelThinkingLevelMaps, newSessionModel, toolPreset, thinkingLevel, fastModeEnabled, fastModeActive, autoRetryEnabled, interruptMode, autoCompactionEnabled, steeringMode, followUpMode,
     liveModelMeta,
     retryInfo, contextUsage, systemPrompt, forkingEntryId,
