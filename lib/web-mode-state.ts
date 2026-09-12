@@ -4,6 +4,7 @@ export interface ActiveGoal {
   startedAt: number;
   status: "active" | "paused" | "completed" | "blocked";
   summary?: string;
+  pauseReason?: "user" | "interrupted";
 }
 
 export interface ActivePlan {
@@ -22,6 +23,7 @@ export function parseActiveGoal(value: unknown): ActiveGoal | null {
   return {
     id: goal.id, objective: goal.objective, startedAt: goal.startedAt,
     status: goal.status as ActiveGoal["status"],
+    ...(goal.pauseReason === "user" || goal.pauseReason === "interrupted" ? { pauseReason: goal.pauseReason } : {}),
     ...(typeof goal.summary === "string" ? { summary: goal.summary } : {}),
   };
 }
@@ -62,6 +64,7 @@ export interface SetGoalArguments {
   action: SetGoalAction;
   objective?: string;
   goalId?: string;
+  userRequested?: boolean;
 }
 
 /** Parse the shared set_goal wire shape before applying local or remote policy. */
@@ -75,6 +78,7 @@ export function parseSetGoalArguments(value: unknown): SetGoalArguments {
   if (args.goalId !== undefined && typeof args.goalId !== "string") throw new Error("Goal ID must be text.");
   return {
     action,
+    userRequested: args.userRequested === true,
     ...(typeof args.objective === "string" ? { objective: args.objective.trim() } : {}),
     ...(typeof args.goalId === "string" ? { goalId: args.goalId } : {}),
   };
@@ -93,13 +97,14 @@ export function validateSetGoalArguments(
 ): void {
   if (args.action === "clear") {
     if (!current || args.goalId !== current.id) throw new Error("No matching goal to clear.");
-    if (current.status === "paused") throw new Error("The user paused this goal; only the user may clear or resume it.");
+    if (current.status === "paused" && current.pauseReason !== "interrupted" && !args.userRequested) throw new Error("This goal is paused. Clearing it requires an explicit user request; pass userRequested only when the user has asked.");
     return;
   }
   if (!args.objective) throw new Error("A non-empty goal objective is required.");
   if (args.action === "replace") {
     if (!current || args.goalId !== current.id) throw new Error("No matching active goal to replace.");
-    if (current.status !== "active") throw new Error("Only an active goal may be replaced; a paused goal requires the user's resume or clear action.");
+    if (current.status === "paused" && !args.userRequested) throw new Error("Replacing a paused goal requires an explicit user request.");
+    if (current.status !== "active" && current.status !== "paused") throw new Error("Use start to replace a terminal goal.");
     if (!activeTurn) throw new Error("Goals can only be replaced during an active agent turn.");
     return;
   }
@@ -108,7 +113,7 @@ export function validateSetGoalArguments(
 }
 
 export function goalPrompt(goal: ActiveGoal): string {
-  return `Continue working autonomously toward this goal:\n\n${goal.objective}\n\n${THREAD_INTERACTION_GUIDANCE} A verified unit or progress report is not a stopping point. Continue through the whole objective. When the entire goal is verified complete, call finish_goal with goalId ${JSON.stringify(goal.id)}, status "completed", and a concise evidence summary. If a genuine blocker requires human input and no independent work remains, call finish_goal with status "blocked" and explain the decision or prerequisite needed. Do not claim completion for partial work. If the user explicitly requests a new scope during this turn, call set_goal with action "replace", the current goalId ${JSON.stringify(goal.id)}, and the new objective; never replace a paused goal. Ordinary final replies do not stop this goal; the host will continue it. The user can pause it with Stop or /goal pause.`;
+  return `Continue working autonomously toward this goal:\n\n${goal.objective}\n\n${THREAD_INTERACTION_GUIDANCE} A verified unit or progress report is not a stopping point. Continue through the whole objective. When the entire goal is verified complete, call finish_goal with goalId ${JSON.stringify(goal.id)}, status "completed", and a concise evidence summary. If a genuine blocker requires human input and no independent work remains, call finish_goal with status "blocked" and explain the decision or prerequisite needed. Do not claim completion for partial work. If the user explicitly requests a new scope during this turn, call set_goal with action "replace", the current goalId ${JSON.stringify(goal.id)}, and the new objective. For a paused goal, get_goal first and set userRequested:true only if the user explicitly requested the mutation. Ordinary final replies do not stop this goal; the host will continue it. The user can pause it with Stop or /goal pause.`;
 }
 
 export const GOAL_TOOL = {
@@ -132,10 +137,10 @@ export const SET_GOAL_TOOL = {
   name: "set_goal",
   label: "Set Goal",
   loadMode: "essential",
-  description: "Manage an autonomous goal within the user's requested scope. action start (default) requires objective and runs only during the current active turn without starting a competing turn. action replace requires the current active goalId plus a new objective and is only for an explicit user-requested scope change; it creates a successor without starting another turn. action clear requires the current goalId and removes that goal. Never replace or clear a paused goal from an agent turn, and never use a stale goalId. The start/replace result contains the goal ID and completion instructions.",
+  description: "Manage an autonomous goal within the user's requested scope. action start (default) requires objective and runs only during the current active turn without starting a competing turn. action replace requires the current active goalId plus a new objective and is only for an explicit user-requested scope change; it creates a successor without starting another turn. action clear requires the current goalId and removes that goal. Call get_goal to retrieve the current ID and pause reason. A paused goal can be cleared or replaced when the user explicitly asks: set userRequested:true only for that request, never infer consent from an autonomous continuation. An interruption-paused goal can be cleared without resuming it. Never use a stale goalId. The start/replace result contains the goal ID and completion instructions.",
   parameters: {
     type: "object",
-    properties: { action: { type: "string", enum: ["start", "replace", "clear"] }, objective: { type: "string", minLength: 1 }, goalId: { type: "string", minLength: 1 } },
+    properties: { action: { type: "string", enum: ["start", "replace", "clear"] }, objective: { type: "string", minLength: 1 }, goalId: { type: "string", minLength: 1 }, userRequested: { type: "boolean", description: "True only when the user explicitly requested this goal mutation; never for autonomous pause bypass." } },
     additionalProperties: false,
   },
 };
@@ -146,3 +151,5 @@ export function formatGoalElapsed(elapsedMs: number): string {
   const minutes = elapsedMinutes % 60;
   return hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
 }
+
+export const GET_GOAL_TOOL = { name: "get_goal", label: "Get Goal", loadMode: "essential", description: "Read the current goal, including ID, status, objective, summary and pause reason. Returns null when no goal exists. Does not start or resume work.", parameters: { type: "object", properties: {}, additionalProperties: false } };

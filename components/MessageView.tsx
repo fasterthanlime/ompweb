@@ -297,7 +297,6 @@ function UserMessageView({ message, showTimestamp = true, cwd, onOpenFile, entry
           )}
         {content && (
         <div
-          ref={bubbleRef}
           className="chat-message-card"
           style={{
             maxWidth: "100%",
@@ -307,18 +306,24 @@ function UserMessageView({ message, showTimestamp = true, cwd, onOpenFile, entry
             borderRadius: "var(--radius-card)",
             boxShadow: "var(--shadow-card)",
             padding: "10px 16px",
-            fontSize: 18,
+            fontSize: 16,
             lineHeight: 1.5,
             color: "var(--text)",
             wordBreak: "break-word",
-            maxHeight: expanded ? undefined : USER_BUBBLE_MAX_HEIGHT,
+            position: "relative",
             overflowY: "hidden",
           }}
         >
-          {content && <SafeMarkdownBody className="markdown-user-message" cwd={cwd} onOpenFile={onOpenFile}>{content}</SafeMarkdownBody>}
+          <div ref={bubbleRef} style={{ maxHeight: overflows && !expanded ? 132 : undefined, overflow: "hidden", maskImage: overflows && !expanded ? "linear-gradient(black 75%, transparent)" : undefined }}>
+            <SafeMarkdownBody className="markdown-user-message" cwd={cwd} onOpenFile={onOpenFile}>{content}</SafeMarkdownBody>
+          </div>
+          {overflows && !expanded && <>
+            <button type="button" aria-label="Expand middle of message" aria-expanded={false} onClick={() => setExpanded(true)} style={{ display: "block", width: "100%", border: 0, padding: "4px 0", background: "transparent", color: "var(--accent)", fontSize: 18, cursor: "pointer" }}>···</button>
+            <div aria-hidden="true" style={{ height: 96, overflow: "hidden", display: "flex", flexDirection: "column", justifyContent: "flex-end", maskImage: "linear-gradient(transparent, black 25%)" }}><div style={{ flexShrink: 0 }}><SafeMarkdownBody className="markdown-user-message" cwd={cwd} onOpenFile={onOpenFile}>{content}</SafeMarkdownBody></div></div>
+          </>}
+          {overflows && expanded && <button type="button" aria-expanded={true} onClick={() => setExpanded(false)} style={{ display: "block", width: "100%", border: 0, padding: "6px 0 0", background: "transparent", color: "var(--accent)", fontSize: 12, cursor: "pointer" }}>Collapse message</button>}
         </div>
         )}
-        {overflows && <button type="button" aria-expanded={expanded} onClick={() => setExpanded(value => !value)} style={{ width: "100%", padding: "7px 10px", border: 0, borderRadius: "0 0 var(--radius-card) var(--radius-card)", background: "var(--user-bg)", color: "var(--accent)", fontSize: 12, cursor: "pointer" }}>{expanded ? "Collapse message" : "More text · Expand message"}</button>}
 
         {/* Bottom row: action buttons + timestamp — inside the bubble's column,
             spanning its width, so the timestamp aligns with its right edge. */}
@@ -565,7 +570,7 @@ function AssistantMessageView({
         style={{
           fontSize: 11,
           color: "var(--text-dim)",
-          marginBottom: 4,
+          position: "absolute", top: 0, right: 0, zIndex: 4, background: "var(--bg-panel)",
           display: actionsOpen && !hasActivityBlocks ? "flex" : "none",
           alignItems: "center",
           gap: 6,
@@ -618,7 +623,7 @@ function AssistantMessageView({
       </div>
 
       {time && actionsOpen && !isStreaming && (
-        <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 2 }}>
+        <div style={{ position: "absolute", right: 0, bottom: 32, zIndex: 4, background: "var(--bg-panel)", display: "flex", justifyContent: "flex-end" }}>
           <span style={{ fontSize: 10, color: "var(--text-dim)" }}>{time}</span>
         </div>
       )}

@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
+import { memo, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import { ChevronDown } from "lucide-react";
 import type { AgentMessage, AssistantContentBlock, AssistantMessage, CustomMessage, ToolResultMessage } from "@/lib/types";
 import { useI18n } from "@/lib/i18n";
@@ -146,6 +146,28 @@ export const CommittedTranscript = memo(function CommittedTranscript({
   handleLoadMoreClick = () => {}, messageIndexOffset = 0,
 }: CommittedTranscriptProps) {
   const { t } = useI18n();
+  const transcriptRef = useRef<HTMLDivElement>(null);
+  const sectionIndexRef = useRef(-1);
+  useEffect(() => {
+    const navigate = (event: KeyboardEvent) => {
+      if (!event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || !["ArrowUp", "ArrowDown"].includes(event.key)) return;
+      const target = event.target as Element | null;
+      if (target?.closest("input, textarea, select, [contenteditable=true], [role=dialog]")) return;
+      const root = transcriptRef.current;
+      if (!root || !root.getClientRects().length) return;
+      const sections = [...root.querySelectorAll<HTMLElement>("[data-conversation-section]")];
+      if (!sections.length) return;
+      const focused = sections.findIndex(section => section.contains(document.activeElement));
+      const current = focused >= 0 ? focused : sectionIndexRef.current;
+      const next = current < 0 ? (event.key === "ArrowDown" ? 0 : sections.length - 1) : Math.max(0, Math.min(sections.length - 1, current + (event.key === "ArrowDown" ? 1 : -1)));
+      event.preventDefault();
+      sectionIndexRef.current = next;
+      sections[next].focus({ preventScroll: true });
+      sections[next].scrollIntoView({ block: "start", behavior: "auto" });
+    };
+    document.addEventListener("keydown", navigate);
+    return () => document.removeEventListener("keydown", navigate);
+  }, []);
   const computedMeta = useMemo(() => buildConversationMeta(messages), [messages]);
   const { toolResultsMap, lastAnchorIdx, visibleRefIndexByMessage } = conversationMeta ?? computedMeta;
   const attachVisibleRef = (refIndex: number) => (el: HTMLDivElement | null) => {
@@ -180,7 +202,7 @@ export const CommittedTranscript = memo(function CommittedTranscript({
     }
     if (options.showTimestamp !== undefined) showTimestamp = options.showTimestamp;
     const view = (
-      <div key={`${keyPrefix}-content-${idx}`}>
+      <div key={`${keyPrefix}-content-${idx}`} data-conversation-section={isGroupAnchor(msg) ? "" : undefined} tabIndex={isGroupAnchor(msg) ? -1 : undefined} style={{ scrollMarginTop: 16 }}>
         <MessageView
           key={`${keyPrefix}-view-${idx}`}
           message={msg}
@@ -220,12 +242,18 @@ export const CommittedTranscript = memo(function CommittedTranscript({
       continue;
     }
     const isLiveTail = (sessionBusy || isStreaming) && endIdx === messages.length && userIdx === lastAnchorIdx;
-    if (isLiveTail) {
+    if (isLiveTail || !hasFinalAssistantAnswer(messages[finalAssistantIdx])) {
       for (let renderIdx = userIdx; renderIdx < endIdx; renderIdx++) rendered.push(renderMessage(renderIdx));
       idx = endIdx;
       continue;
     }
     rendered.push(renderMessage(userIdx));
+    for (let commentaryIdx = userIdx + 1; commentaryIdx < finalAssistantIdx; commentaryIdx++) {
+      const message = messages[commentaryIdx];
+      if (message.role !== "assistant") continue;
+      const prose = message.content.filter(block => block.type === "text" && block.text.trim());
+      if (prose.length) rendered.push(renderMessage(commentaryIdx, { messageOverride: withAssistantBlocks(message, prose, { omitUsage: true }), showTimestamp: false, keyPrefix: "commentary" }));
+    }
     const processIndices: number[] = [];
     for (let processIdx = userIdx + 1; processIdx < finalAssistantIdx; processIdx++) processIndices.push(processIdx);
     const visibleProcessIndices = processIndices.filter((processIdx) => hasDisplayableProcessMessage(messages[processIdx]));
@@ -240,7 +268,7 @@ export const CommittedTranscript = memo(function CommittedTranscript({
     if (processCount > 0) {
       const processRefIdx = visibleProcessIndices.map((processIdx) => visibleRefIndexByMessage.get(processIdx)).find((value): value is number => typeof value === "number") ?? (finalAnswerMessage ? undefined : visibleRefIndexByMessage.get(finalAssistantIdx));
       const processGroup = <ProcessDetailsGroup messageCount={processCount} toolCallCount={countToolCalls(messages, visibleProcessIndices) + countToolCallBlocks(finalSplit.processBlocks)}>
-        {visibleProcessIndices.map((processIdx) => renderMessage(processIdx, { attachRef: false, keyPrefix: "process" }))}
+        {visibleProcessIndices.map((processIdx) => { const message = messages[processIdx]; return renderMessage(processIdx, { attachRef: false, keyPrefix: "process", messageOverride: message.role === "assistant" ? withAssistantBlocks(message, message.content.filter(block => block.type !== "text"), { omitUsage: true }) : message }); })}
         {finalProcessMessage && renderMessage(finalAssistantIdx, { attachRef: false, keyPrefix: "process-final", messageOverride: finalProcessMessage, showTimestamp: false })}
       </ProcessDetailsGroup>;
       rendered.push(<div key={`process-group-${userIdx}-${finalAssistantIdx}`} ref={processRefIdx === undefined || !messageRefs ? undefined : (el) => { messageRefs.current[processRefIdx] = el; }}>{processGroup}</div>);
@@ -262,10 +290,10 @@ export const CommittedTranscript = memo(function CommittedTranscript({
     return { startIndex: anchored, hasMore: anchored > 0 };
   }, [rendered.length, visibleCount, nearBottom]);
   const showHistorySentinel = hasMore || historyHasMore;
-  return <>
+  return <div ref={transcriptRef}>
     {showHistorySentinel && <button ref={sentinelRef} type="button" onClick={handleLoadMoreClick} disabled={historyLoading} className="py-3 w-full text-center text-xs text-text-muted hover:text-text transition-colors cursor-pointer disabled:cursor-wait disabled:opacity-60">
       {historyLoading ? t("chatWindow.loadingSession") : hasMore ? t("chatWindow.scrollUpToLoad", { count: startIndex }) : t("chatWindow.scrollUpToLoad", { count: 0 })}
     </button>}
     {rendered.slice(startIndex)}
-  </>;
+  </div>;
 });
