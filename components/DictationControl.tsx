@@ -4,6 +4,7 @@ import type { DictationSpan } from "@/lib/dictation-display";
 import { useEffect, useRef, useState } from "react";
 import { ArrowUp, Download, Loader2, Mic, RotateCcw, Square, X } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
+import { nativeAudioHandler, NativeAudioSource, pcmWave } from "@/lib/native-audio";
 import { LiveCapture } from "@/lib/dictation-live-capture";
 import { detectLiveDictation } from "@/lib/dictation-live-client";
 
@@ -31,6 +32,8 @@ type Capture = {
   startedAt?: number;
   sendAfterTranscription?: boolean;
   live?: LiveCapture;
+  native?: NativeAudioSource;
+  stopNative?: () => void;
   releaseWakeLock?: () => void;
 };
 
@@ -223,6 +226,7 @@ export function DictationControl({
     if (capture) {
       capture.cancelled = true;
       capture.request?.abort();
+      capture.native?.cancel();
       if (capture.recorder?.state === "recording") capture.recorder.stop();
       release(capture);
       capture.live?.cancel();
@@ -240,7 +244,10 @@ export function DictationControl({
       if (document.visibilityState !== "hidden") return;
       const capture = captureRef.current;
       if (!capture) return;
-      if (capture.recorder?.state === "recording") {
+      if (capture.stopNative) {
+        capture.sendAfterTranscription = false;
+        capture.stopNative();
+      } else if (capture.recorder?.state === "recording") {
         capture.sendAfterTranscription = false;
         capture.recorder.stop();
       } else if (!capture.recorder) {
@@ -251,6 +258,71 @@ export function DictationControl({
     document.addEventListener("visibilitychange", onVisibility);
     return () => document.removeEventListener("visibilitychange", onVisibility);
   }, []);
+
+  async function startNative(capture: Capture) {
+    const handler = nativeAudioHandler()!;
+    const live = capture.live!;
+    setPartial("");
+    setPartialSpans(undefined);
+    setProvider("Local");
+    setConnecting(true);
+    // The existing authenticated socket owns display mode and transcript revisions.
+    try {
+      await live.connect((text, spans) => {
+        if (!capture.cancelled) { setPartial(text); setPartialSpans(spans); }
+      });
+    } finally { if (!capture.cancelled) setConnecting(false); }
+    if (capture.cancelled) return;
+    const finish = async (captureError?: Error) => {
+      if (capture.finishing || capture.cancelled) return;
+      capture.finishing = true;
+      clearTimeout(capture.timer);
+      clearInterval(capture.interval);
+      setPhase("transcribing");
+      try {
+        if (captureError) throw captureError;
+        await capture.native!.stop();
+        if (capture.cancelled) return;
+        const text = await live.finish();
+        if (capture.cancelled) return;
+        capture.transcriptDelivered = true;
+        onTranscriptRef.current(text, capture.sendAfterTranscription === true);
+        setPhase("idle");
+      } catch (cause) {
+        if (capture.cancelled) return;
+        if (live.pcm.length) {
+          setRetained({ blob: pcmWave(live.pcm), mimeType: "audio/wav", pcm: live.pcm });
+          setPhase("failed");
+        } else { setPhase("idle"); }
+        setError(cause instanceof Error ? cause.message : t("dictation.failed"));
+        recordDiagnostic("native-capture-failed", capture, cause);
+      } finally {
+        capture.native?.cancel();
+        live.cancel();
+        release(capture);
+        if (captureRef.current === capture) captureRef.current = null;
+      }
+    };
+    capture.native = new NativeAudioSource(handler, bytes => {
+      live.acceptPcm(bytes);
+      const samples = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+      const bars = meterRef.current?.children;
+      if (bars) for (let i = 0; i < bars.length; i++) {
+        const sample = Math.floor(i * (bytes.length / 2) / bars.length) * 2;
+        const level = Math.abs(samples.getInt16(sample, true)) / 32768;
+        (bars[i] as HTMLElement).style.height = `${Math.max(6, Math.sqrt(level) * 100)}%`;
+      }
+    }, error => { void finish(error); });
+    await capture.native.start();
+    if (capture.cancelled || capture.finishing) { capture.native.cancel(); return; }
+    capture.stopNative = () => { void finish(); };
+    capture.startedAt = performance.now();
+    capture.interval = setInterval(() => setElapsed(Math.floor((performance.now() - capture.startedAt!) / 1000)), 250);
+    capture.timer = setTimeout(() => { capture.sendAfterTranscription = false; capture.stopNative?.(); }, MAX_DURATION_MS);
+    keepScreenAwake(capture);
+    recordDiagnostic("native-recording", capture);
+    setPhase("recording");
+  }
 
   async function start() {
     if (captureRef.current) return;
@@ -263,12 +335,13 @@ export function DictationControl({
     const liveCandidate = new LiveCapture();
     // Safari may suspend a context created after getUserMedia/config awaits. Allocate
     // and resume it from the button gesture, then reuse it in LiveCapture.start().
-    try { liveCandidate.prepareAudio(); } catch { /* non-live POST capture may still work */ }
+    try { if (!nativeAudioHandler()) liveCandidate.prepareAudio(); } catch { /* non-live POST capture may still work */ }
     capture.live = liveCandidate;
     captureRef.current = capture;
     setElapsed(0);
     setPhase("permission");
     try {
+      if (nativeAudioHandler()) { await startNative(capture); return; }
       const config = (liveConfigRef.current ?? detectLiveDictation()).catch(() => false);
       setPartial("");
       setPartialSpans(undefined);
@@ -401,6 +474,7 @@ export function DictationControl({
     } catch (cause) {
       recordDiagnostic("startup-failed", capture, cause);
       release(capture);
+      capture.native?.cancel();
       capture.live?.cancel();
       if (capture.cancelled) return;
       captureRef.current = null;
@@ -541,7 +615,9 @@ export function DictationControl({
                   onClick={() => {
                     if (phase !== "recording") { discard(); return; }
                     const capture = captureRef.current;
-                    if (!capture || capture.finishing || capture.recorder?.state !== "recording") return;
+                    if (!capture || capture.finishing) return;
+                    if (capture.stopNative) { capture.stopNative(); return; }
+                    if (capture.recorder?.state !== "recording") return;
                     capture.finishing = true;
                     capture.recorder.stop();
                   }}>
@@ -564,7 +640,9 @@ export function DictationControl({
                   disabled={phase !== "recording"}
                   onClick={() => {
                     const capture = captureRef.current;
-                    if (!capture || capture.finishing || capture.recorder?.state !== "recording") return;
+                    if (!capture || capture.finishing) return;
+                    if (capture.stopNative) { capture.sendAfterTranscription = true; capture.stopNative(); return; }
+                    if (capture.recorder?.state !== "recording") return;
                     capture.finishing = true;
                     capture.sendAfterTranscription = true;
                     capture.recorder.stop();
