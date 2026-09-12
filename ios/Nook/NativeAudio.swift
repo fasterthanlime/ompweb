@@ -2,9 +2,22 @@ import AVFAudio
 import Foundation
 import OSLog
 
-private struct AudioPacket: Sendable {
+struct AudioPacket: Sendable {
     let samples: Data
     let sampleRate: Double
+}
+
+nonisolated func makeAudioTap(
+    continuation: AsyncStream<AudioPacket>.Continuation,
+    sampleRate: Double
+) -> @Sendable (AVAudioPCMBuffer, AVAudioTime) -> Void {
+    return { buffer, _ in
+        guard let channel = buffer.floatChannelData?[0] else { return }
+        let data = Data(bytes: channel, count: Int(buffer.frameLength) * MemoryLayout<Float>.size)
+        if case .dropped = continuation.yield(AudioPacket(samples: data, sampleRate: sampleRate)) {
+            continuation.finish()
+        }
+    }
 }
 
 @MainActor
@@ -43,13 +56,8 @@ final class NativeAudio {
             let (stream, continuation) = AsyncStream<AudioPacket>.makeStream(bufferingPolicy: .bufferingOldest(8))
             self.continuation = continuation
             let rate = format.sampleRate
-            input.installTap(onBus: 0, bufferSize: 4096, format: format) { buffer, _ in
-                guard let channel = buffer.floatChannelData?[0] else { return }
-                let data = Data(bytes: channel, count: Int(buffer.frameLength) * MemoryLayout<Float>.size)
-                if case .dropped = continuation.yield(AudioPacket(samples: data, sampleRate: rate)) {
-                    continuation.finish()
-                }
-            }
+            input.installTap(onBus: 0, bufferSize: 4096, format: format,
+                             block: makeAudioTap(continuation: continuation, sampleRate: rate))
             self.engine = engine
             consumer = Task { [weak self] in
                 for await packet in stream {
