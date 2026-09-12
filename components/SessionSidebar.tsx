@@ -1,5 +1,6 @@
 "use client";
 
+import { NookMark } from "./NookMark";
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, useCallback, useDeferredValue, type CSSProperties, type ReactNode, type RefObject } from "react";
 import type { SessionInfo } from "@/lib/types";
 import type { RemoteTargetSummary, RemoteThreadSummary } from "./RemoteWorkspaceList";
@@ -109,7 +110,7 @@ function formatRelativeTime(value: string, _locale: string, now: number): string
 
 
 function OmpWebTitle() {
-  return <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}><span aria-hidden="true" style={{ width: 18, height: 18, borderLeft: "3px solid var(--accent)", borderBottom: "3px solid var(--accent)", borderRadius: "2px 0 0 6px", position: "relative", display: "inline-block" }}><span style={{ position: "absolute", width: 5, height: 5, borderRadius: "50%", background: "var(--accent)", left: 5, bottom: 5 }} /></span><span style={{ color: "var(--text)", fontWeight: 600, fontSize: 20, letterSpacing: "-0.045em" }}>nook</span></div>;
+  return <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}><NookMark /><span style={{ color: "var(--text)", fontWeight: 600, fontSize: 20, letterSpacing: "-0.045em" }}>nook</span></div>;
 }
 
 function SidebarIconButton({ label, title, onClick, active = false, disabled = false, children }: { label: string; title?: string; onClick: () => void; active?: boolean; disabled?: boolean; children: ReactNode }) {
