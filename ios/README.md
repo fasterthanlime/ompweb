@@ -88,3 +88,12 @@ No background recording entitlement or automatic background submission is enable
 
 Production deployment remains owned by the server agent. This work does not
 invoke deployment, confirmation, or rollback.
+
+## Passkey association
+
+The app declares `webcredentials:auth.vxn.rs` in its generated entitlements.
+The auth service uses RP ID `auth.vxn.rs` and publishes
+`https://auth.vxn.rs/.well-known/apple-app-site-association` with
+`B2N6FSRTPV.rs.vxn.nook` in `webcredentials.apps`. The signed provisioning
+profile must support Associated Domains. Regenerate and reinstall after changes;
+physical passkey sign-in remains the acceptance check.
