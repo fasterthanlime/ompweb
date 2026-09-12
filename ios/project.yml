@@ -1,0 +1,52 @@
+name: Nook
+options:
+  bundleIdPrefix: rs.vxn
+  deploymentTarget:
+    iOS: '18.0'
+settings:
+  base:
+    SWIFT_VERSION: '6.0'
+    SWIFT_DEFAULT_ACTOR_ISOLATION: MainActor
+    SWIFT_APPROACHABLE_CONCURRENCY: YES
+    GENERATE_INFOPLIST_FILE: YES
+    INFOPLIST_KEY_NSMicrophoneUsageDescription: Nook uses your microphone to dictate messages.
+    INFOPLIST_KEY_UILaunchScreen_Generation: YES
+    INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+    NOOK_LOGIN_URL: https://auth.vxn.rs/
+    NOOK_SERVER_URL: https://omp-amos.vxn.rs/
+    CURRENT_PROJECT_VERSION: 1
+    MARKETING_VERSION: '0.1.0'
+    TARGETED_DEVICE_FAMILY: '1,2'
+targets:
+  Nook:
+    type: application
+    platform: iOS
+    sources: [Nook]
+    info:
+      path: Generated/Nook-Info.plist
+      properties:
+        NookServerURL: $(NOOK_SERVER_URL)
+        NookLoginURL: $(NOOK_LOGIN_URL)
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: rs.vxn.nook
+  NookTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources: [NookTests]
+    dependencies:
+      - target: Nook
+schemes:
+  Nook:
+    build:
+      targets:
+        Nook: all
+    test:
+      targets: [NookTests]

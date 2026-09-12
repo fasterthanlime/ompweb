@@ -100,13 +100,7 @@ export class LiveCapture {
       if (event.data.type === "stopped") { this.flushed?.(); return; }
       if (event.data.type !== "pcm" || this.cancelled) return;
       const bytes = new Uint8Array(event.data.buffer as ArrayBuffer);
-      this.bytes += bytes.byteLength;
-      if (this.bytes > MAX_LIVE_QUEUE_BYTES) {
-        this.failure ??= new Error("Live recording reached its size limit");
-        return;
-      }
-      this.pcm.push(bytes);
-      if (this.connected && !this.failure) this.upload(bytes);
+      try { this.acceptPcm(bytes); } catch { /* failure is retained for finish() */ }
     };
     source.connect(node);
     node.connect(context.destination);
@@ -133,6 +127,17 @@ export class LiveCapture {
         throw new AudioCaptureError("Audio engine did not restart after returning to Nook");
       }
     }
+  }
+
+  acceptPcm(bytes: Uint8Array<ArrayBuffer>) {
+    if (this.cancelled) return;
+    this.bytes += bytes.byteLength;
+    if (this.bytes > MAX_LIVE_QUEUE_BYTES) {
+      this.failure ??= new AudioCaptureError("Live recording reached its size limit");
+      throw this.failure;
+    }
+    this.pcm.push(bytes);
+    if (this.connected && !this.failure) this.upload(bytes);
   }
 
   private upload(bytes: Uint8Array<ArrayBuffer>) {

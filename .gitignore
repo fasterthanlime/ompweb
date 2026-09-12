@@ -83,3 +83,9 @@ Desktop.ini
 # local tooling cruft
 /.commandcode/
 /patch-paths.mjs
+
+# Generated iOS project and local signing state (source: ios/project.yml)
+/ios/Nook.xcodeproj/
+/ios/DerivedData/
+
+/ios/Generated/
