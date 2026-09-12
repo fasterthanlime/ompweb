@@ -778,7 +778,8 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
     if (!ta) return;
     ta.style.height = "auto";
     if (editorValue) ta.style.height = `${Math.min(ta.scrollHeight, 200)}px`;
-  }, [editorValue]);
+    if (dictationActive && dictationPreview) { ta.scrollTop = ta.scrollHeight; if (previewOverlayRef.current) previewOverlayRef.current.scrollTop = ta.scrollTop; }
+  }, [editorValue, dictationActive, dictationPreview]);
 
   useEffect(() => {
     return () => {
@@ -2223,8 +2224,7 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
             ))}
           </div>
         )}
-          <div style={{ position: "relative", minWidth: 0 }}>
-          {!value && !attachedImages.length && !attachedTextFiles.length && !dictationActive && !submitting && !typingFocused && <QuickReplies onStartTyping={() => { setTypingFocused(true); textareaRef.current?.focus(); }} onReply={message => isStreaming && onInterruptAndReply ? onInterruptAndReply(message) : onSend(message)} />}
+          <div className="composer-writing-area">
           <textarea
             ref={textareaRef}
             autoComplete="off"
@@ -2254,8 +2254,8 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
             }}
             onInput={handleInput}
             onPaste={handlePaste}
-            placeholder={!value && !attachedImages.length && !attachedTextFiles.length && !dictationActive ? "" : t("chatInput.placeholder")}
-            rows={1}
+            placeholder="Type here…"
+            rows={2}
             style={{
               display: "block",
               width: "100%",
@@ -2264,17 +2264,19 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
               outline: "none",
               resize: "none",
               color: dictationPreview && previewSpans ? "transparent" : "var(--text)",
-              fontSize: 18,
+              fontSize: 16,
               lineHeight: 1.5,
               fontFamily: "inherit",
-              minHeight: 24,
+              minHeight: 48,
               maxHeight: 200,
               overflow: "auto",
             }}
           />
-          {dictationPreview && previewSpans && <div ref={previewOverlayRef} aria-hidden="true" style={{ position: "absolute", inset: 0, pointerEvents: "none", overflow: "hidden", whiteSpace: "pre-wrap", overflowWrap: "break-word", fontFamily: "inherit", fontSize: 18, lineHeight: 1.5, color: "var(--text)" }}>{value}{value && !/\s$/.test(value) ? " " : ""}{previewSpans.map((span,index)=><span key={index} style={{color:span.kind === "punctuation" && !span.stable ? "var(--text-dim)" : "var(--text)"}}>{span.text}</span>)}</div>}
+          {dictationPreview && previewSpans && <div ref={previewOverlayRef} aria-hidden="true" style={{ position: "absolute", inset: 0, pointerEvents: "none", overflow: "hidden", whiteSpace: "pre-wrap", overflowWrap: "break-word", fontFamily: "inherit", fontSize: 16, lineHeight: 1.5, color: "var(--text)" }}>{value}{value && !/\s$/.test(value) ? " " : ""}{previewSpans.map((span,index)=><span key={index} style={{color:span.kind === "punctuation" && !span.stable ? "var(--text-dim)" : "var(--text)"}}>{span.text}</span>)}</div>}
+          <div className="composer-reply-line" style={{ visibility: !value && !attachedImages.length && !attachedTextFiles.length && !dictationActive && !submitting && !typingFocused ? "visible" : "hidden" }} inert={Boolean(value || attachedImages.length || attachedTextFiles.length || dictationActive || submitting || typingFocused)}>
+            <QuickReplies onReply={message => isStreaming && onInterruptAndReply ? onInterruptAndReply(message) : onSend(message)} />
           </div>
-
+          </div>
           {/* Toolbar: + attachment (labelled menu) · context ring · model · reasoning · dictation · send/stop */}
           {submitError && <div role="alert" style={{color:"var(--status-error)",fontSize:12,marginTop:6}}>{submitError}</div>}
           <div className="composer-toolbar" aria-busy={submitting}>

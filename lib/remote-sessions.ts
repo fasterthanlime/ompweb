@@ -11,6 +11,7 @@ import { readRemoteControls, type RemoteControls } from "./remote-controls";
 import { validateAgentImages } from "./image-attachments";
 import { getSessionGoal, setSessionGoal } from "./session-preferences";
 import {
+  GET_GOAL_TOOL,
   GOAL_TOOL,
   SET_GOAL_TOOL,
   goalPrompt,
@@ -21,9 +22,9 @@ import {
 } from "./web-mode-state";
 import { THREAD_EXPRESSION_TOOLS, handleThreadExpressionTool, getRemoteReactionTargetId, previewMessage, MAX_REACTION_TARGETS, type ReactionTarget } from "./thread-expression";
 import { VISUAL_TOOL, handleVisualTool } from "./visual-frame";
-const SERVER_HOST_TOOLS = [...THREAD_EXPRESSION_TOOLS, VISUAL_TOOL, GOAL_TOOL, SET_GOAL_TOOL];
+const SERVER_HOST_TOOLS = [...THREAD_EXPRESSION_TOOLS, VISUAL_TOOL, GOAL_TOOL, SET_GOAL_TOOL, GET_GOAL_TOOL];
 const SERVER_HOST_TOOL_NAMES = new Set(SERVER_HOST_TOOLS.map((tool) => tool.name));
-const GOAL_TOOL_NAMES = new Set([GOAL_TOOL.name, SET_GOAL_TOOL.name]);
+const GOAL_TOOL_NAMES = new Set([GOAL_TOOL.name, SET_GOAL_TOOL.name, GET_GOAL_TOOL.name]);
 
 const REMOTE_SESSIONS_PATH = process.env.OMP_WEB_REMOTE_SESSIONS_PATH
   ?? `${homedir()}/.omp/agent/remote-sessions.json`;
@@ -212,7 +213,7 @@ function updateRemoteGoal(id: string, goal: ActiveGoal | null): void {
 function pauseRemoteGoal(id: string, summary: string): void {
   const runtime = runtimeFor(id);
   if (runtime.goal?.status !== "active") return;
-  updateRemoteGoal(id, { ...runtime.goal, status: "paused", summary });
+  updateRemoteGoal(id, { ...runtime.goal, status: "paused", pauseReason: summary.startsWith("Paused by user") || summary.startsWith("Archived by user") ? "user" : "interrupted", summary });
 }
 
 function scheduleRemoteGoalContinuation(id: string): void {
@@ -224,7 +225,7 @@ function scheduleRemoteGoalContinuation(id: string): void {
     if (runtime.pendingPrompt) { try { await runtime.pendingPrompt; } catch { return; } }
     if (runtime.goal !== goal || goal.status !== "active" || !runtime.proc?.isAlive || runtime.running) return;
     void sendRemotePrompt(id, goalPrompt(goal)).catch((error) => {
-      if (runtime.goal === goal) updateRemoteGoal(id, { ...goal, status: "paused", summary: sanitizeError(error) || "Goal continuation failed." });
+      if (runtime.goal === goal) updateRemoteGoal(id, { ...goal, status: "paused", pauseReason: "interrupted", summary: sanitizeError(error) || "Goal continuation failed." });
       emit(id, { type: "error", error: sanitizeError(error) || "Goal continuation failed." });
     });
   });
@@ -413,6 +414,7 @@ function handleRemoteGoalTool(id: string, event: RpcFrame, toolName: string): vo
   const proc = runtime.proc;
   if (!requestId || !proc?.isAlive) return;
   try {
+    if (toolName === GET_GOAL_TOOL.name) { goalResult(proc, requestId, JSON.stringify(runtime.goal)); return; }
     if (toolName === SET_GOAL_TOOL.name) {
       const args = parseSetGoalArguments(event.arguments);
       validateSetGoalArguments(runtime.goal, args, { activeTurn: runtime.running });
@@ -434,9 +436,10 @@ function handleRemoteGoalTool(id: string, event: RpcFrame, toolName: string): vo
       && (args.status === "completed" || args.status === "blocked")
       && typeof args.summary === "string" && args.summary.trim().length > 0;
     if (!valid) throw new Error("No matching active goal, or invalid status/summary.");
+    updateRemoteGoal(id, { ...runtime.goal!, status: args.status as "completed" | "blocked", summary: (args.summary as string).trim() });
     goalResult(proc, requestId, appendInteractionGuidance(id, `Goal ${args.status}.`));
   } catch (error) {
-    goalResult(proc, requestId, error instanceof Error ? error.message : String(error), true);
+    goalResult(proc, requestId, `${error instanceof Error ? error.message : String(error)} Current goal: ${JSON.stringify(runtime.goal)}. Use get_goal for current state.`, true);
   }
 }
 
@@ -585,7 +588,7 @@ async function connect(id: string): Promise<void> {
       runtime.running = stateValue.isStreaming === true;
       runtime.compacting = stateValue.isCompacting === true;
       runtime.goal = getSessionGoal(id);
-      if (runtime.goal?.status === "active") updateRemoteGoal(id, { ...runtime.goal, status: "paused", summary: "Session reconnected; use /goal resume to continue." });
+      if (runtime.goal?.status === "active") updateRemoteGoal(id, { ...runtime.goal, status: "paused", pauseReason: "interrupted", summary: "Session reconnected; use /goal resume to continue." });
       await proc.sendCommand({ type: "set_host_tools", tools: SERVER_HOST_TOOLS });
       await refreshMessages(id, proc);
       emitSnapshot(id);

@@ -2676,12 +2676,13 @@ html.dark .dropdown-surface :is(select, option) {
   .dictation-spinner { animation-duration: 2.4s; }
 }
 
+.message-interaction-target { border: 1px solid transparent; border-radius: var(--radius-card); }
 .message-interaction-target:focus { outline: none; }
-.message-interaction-target:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: var(--radius-card); }
+.message-interaction-target:focus-visible { border-color: var(--accent); }
 .message-reactions-compact { margin-top: 0; }
 .message-reaction-action { height: 28px; padding: 4px 7px; border-radius: 6px; gap: 5px; line-height: 1; }
 
-.message-interaction-target[data-selected="true"] { outline: 1px solid var(--accent); outline-offset: 4px; border-radius: var(--radius-card); }
+.message-interaction-target[data-selected="true"] { border-color: var(--accent); }
 
 .composer-quick-replies { justify-content: flex-start; flex-wrap: nowrap; margin: 4px 0 0; }
 .composer-quick-replies .quick-reply-primary:first-child { width: auto; }
@@ -2772,8 +2773,18 @@ html.dark .dropdown-surface :is(select, option) {
   src: url(/fonts/nook/font-10.ttf) format('truetype');
 }
 :root { --font-conversation: 'Jost', sans-serif; --font-heading: 'Geist', sans-serif; --font-mono: 'Iosevka Charon Mono', monospace; }
-.chat-message .markdown-body, .markdown-user-message { font-family: var(--font-conversation); font-size: 18px; line-height: 1.5; }
+.chat-message .markdown-body, .markdown-user-message { font-family: var(--font-conversation); font-size: 16px; line-height: 1.5; }
 .chat-message .markdown-body p, .markdown-user-message p { max-width: 65ch; }
 .chat-input-shell { font-family: var(--font-conversation); }
-.chat-input-shell textarea { font-family: var(--font-conversation) !important; font-size: 18px !important; line-height: 1.5 !important; }
+.chat-input-shell textarea { font-family: var(--font-conversation) !important; font-size: 16px !important; line-height: 1.5 !important; }
 .chat-message .markdown-body h1, .chat-message .markdown-body h2 { font-family: var(--font-heading); }
+
+.chat-input-shell .composer-quick-replies { position: relative; inset: auto; flex-wrap: wrap; overflow: visible; }
+.chat-input-shell .composer-type-prompt { font: 16px/1.5 var(--font-conversation); }
+
+.composer-writing-area { position: relative; display: grid; min-width: 0; }
+.composer-writing-area > textarea { grid-area: 1 / 1; align-self: stretch; }
+.composer-reply-line { grid-area: 1 / 1; align-self: end; padding-top: 24px; pointer-events: none; z-index: 1; }
+.chat-input-shell .composer-reply-line .composer-quick-replies { position: static; width: 100%; max-width: 100%; margin: 0; flex-wrap: wrap; gap: 4px; pointer-events: none; }
+.chat-input-shell .composer-reply-line .composer-quick-replies button { pointer-events: auto; font-size: 13px; min-height: 24px; }
+.composer-reply-line[inert] .composer-quick-replies button { pointer-events: none; }
