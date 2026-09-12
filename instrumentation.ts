@@ -1,5 +1,3 @@
-import { restoreActiveRpcSessions } from "@/lib/rpc-manager";
-
 export async function register(): Promise<void> {
   if (process.env.NEXT_RUNTIME !== "nodejs") return;
 
@@ -24,6 +22,7 @@ export async function register(): Promise<void> {
   // process snapshots its live sessions during SIGTERM; recreate those omp
   // children before serving so conversations continue without a browser turn.
   try {
+    const { restoreActiveRpcSessions } = await import("@/lib/rpc-manager");
     await restoreActiveRpcSessions();
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);

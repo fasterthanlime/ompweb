@@ -6,9 +6,17 @@ export function nativeAudioHandler(): NativeAudioHandler | undefined {
     .webkit?.messageHandlers?.nookAudioV1;
 }
 
+function nativeCaptureID(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = Array.from(bytes, byte => byte.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
 /** One capture owns its native ID; late replies cannot affect a successor. */
 export class NativeAudioSource {
-  private readonly id = crypto.randomUUID();
+  private readonly id = nativeCaptureID();
   private stopped = false;
   private cancelled = false;
   private lastPcmAt = 0;
