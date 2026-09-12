@@ -1,5 +1,5 @@
 import { execFileSync } from "child_process";
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
@@ -231,8 +231,14 @@ function sameAgentPath(left: string, right: string): boolean {
   const a = resolve(left);
   const b = resolve(right);
   if (a === b) return true;
-  try { return realpathSync(a) === realpathSync(b); }
-  catch { return false; }
+  if (dirname(a) !== dirname(b) || a.toLowerCase() !== b.toLowerCase()) return false;
+  try {
+    const leftStat = lstatSync(a);
+    const rightStat = lstatSync(b);
+    const names = readdirSync(dirname(a));
+    return leftStat.dev === rightStat.dev && leftStat.ino === rightStat.ino
+      && !(names.includes(basename(a)) && names.includes(basename(b)));
+  } catch { return false; }
 }
 
 export function validateAgentFileReference(scopeDir: string, name: string): void {
