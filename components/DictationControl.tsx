@@ -4,6 +4,7 @@ import type { DictationSpan } from "@/lib/dictation-display";
 import { useEffect, useRef, useState } from "react";
 import { ArrowUp, Download, Loader2, Mic, RotateCcw, Square, X } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
+import { pcmMeterLevels } from "@/lib/pcm-meter";
 import { nativeAudioHandler, NativeAudioSource, pcmWave } from "@/lib/native-audio";
 import { LiveCapture } from "@/lib/dictation-live-capture";
 import { detectLiveDictation } from "@/lib/dictation-live-client";
@@ -305,13 +306,10 @@ export function DictationControl({
     };
     capture.native = new NativeAudioSource(handler, bytes => {
       live.acceptPcm(bytes);
-      const samples = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
       const bars = meterRef.current?.children;
-      if (bars) for (let i = 0; i < bars.length; i++) {
-        const sample = Math.floor(i * (bytes.length / 2) / bars.length) * 2;
-        const level = Math.abs(samples.getInt16(sample, true)) / 32768;
-        (bars[i] as HTMLElement).style.height = `${Math.max(6, Math.sqrt(level) * 100)}%`;
-      }
+      if (bars) pcmMeterLevels(bytes, bars.length).forEach((height, i) => {
+        (bars[i] as HTMLElement).style.height = `${height}%`;
+      });
     }, error => { void finish(error); });
     await capture.native.start();
     if (capture.cancelled || capture.finishing) { capture.native.cancel(); return; }

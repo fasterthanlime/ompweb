@@ -22,6 +22,11 @@ targets:
     type: application
     platform: iOS
     sources: [Nook]
+    entitlements:
+      path: Generated/Nook.entitlements
+      properties:
+        com.apple.developer.associated-domains:
+          - webcredentials:auth.vxn.rs
     info:
       path: Generated/Nook-Info.plist
       properties:
@@ -37,6 +42,7 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: rs.vxn.nook
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
   NookTests:
     type: bundle.unit-test
     platform: iOS

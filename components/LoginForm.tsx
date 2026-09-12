@@ -1,6 +1,6 @@
 "use client";
 
-import { LockKeyhole } from "lucide-react";
+import { NookMark } from "./NookMark";
 import { FormEvent, useState } from "react";
 
 export function LoginForm() {
@@ -36,9 +36,7 @@ export function LoginForm() {
         aria-labelledby="login-title"
         style={{ width: "min(100%, 380px)", padding: "32px", background: "var(--bg-panel)", border: "1px solid var(--border)", borderRadius: "var(--radius-modal)", boxShadow: "var(--shadow-modal)" }}
       >
-        <div style={{ width: 40, height: 40, display: "grid", placeItems: "center", borderRadius: "50%", background: "var(--user-bg)", color: "var(--accent)", marginBottom: 20 }}>
-          <LockKeyhole size={19} aria-hidden="true" />
-        </div>
+        <div style={{ marginBottom: 20 }}><NookMark size={40} /></div>
         <h1 id="login-title" className="display-serif" style={{ margin: 0, fontSize: 28, lineHeight: 1.1, color: "var(--text)" }}>Welcome back</h1>
         <p style={{ margin: "10px 0 24px", color: "var(--text-muted)", fontSize: 13, lineHeight: 1.5 }}>Enter the password for this Nook workspace.</p>
         <form onSubmit={signIn} style={{ display: "grid", gap: 14 }}>

@@ -1,4 +1,5 @@
 "use client";
+import { NookMark } from "./NookMark";
 import { registerAbortHandler } from "@/hooks/useKeyboardShortcuts";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { AgentMessage, AssistantMessage, BashExecutionMessage, CustomMessage, ExtensionUiRequest, SessionInfo, SessionTreeNode } from "@/lib/types";
@@ -634,7 +635,7 @@ export function ChatWindow({ session, newSessionCwd, toolCallsDefaultCollapsed =
               }}
             >
               <div style={{ display: "flex", alignItems: "baseline", gap: 10, minWidth: 0, flex: 1, lineHeight: 1.4, overflow: "hidden" }}>
-                <span aria-hidden="true" style={{ width: 24, height: 24, flexShrink: 0, background: "url(/nook.svg) center / contain no-repeat" }} />
+                <NookMark />
                 <span style={{ fontSize: 20, color: "var(--text)", fontWeight: 600, letterSpacing: "-0.045em", flexShrink: 0, whiteSpace: "nowrap" }}>nook</span>
               </div>
               <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 2, flexShrink: 0 }}>
