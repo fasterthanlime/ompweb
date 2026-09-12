@@ -2804,3 +2804,5 @@ html.dark .dropdown-surface :is(select, option) {
 .thread-placeholder-lines i:nth-child(3) { width: 75%; }
 .thread-placeholder-composer { margin-top: auto; height: 110px; border-radius: var(--radius-card); border: 1px solid var(--border); background: var(--bg-panel); }
 @media (prefers-reduced-motion: reduce) { .thread-pager.is-settling > * { transition: none; } }
+
+[data-thread-swipe] { touch-action: pan-y pinch-zoom; }

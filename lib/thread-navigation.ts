@@ -13,6 +13,6 @@ export function orderedThreads(local: SessionInfo[], remote: RemoteThreadSummary
 }
 
 export function swipeCommits(distance: number, elapsed: number, width: number): boolean {
-  return Math.abs(distance) >= Math.min(120, width * 0.28)
+  return Math.abs(distance) >= Math.min(80, width * 0.2)
     || (Math.abs(distance) >= 45 && Math.abs(distance) / Math.max(elapsed, 1) > 0.55);
 }

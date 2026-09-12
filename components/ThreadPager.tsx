@@ -68,8 +68,11 @@ export function ThreadPager({ activeKey, items, onSelect, onWarm, children }: {
       const target = event.target instanceof Element ? event.target : null;
       const composer = target?.closest('[data-thread-swipe]');
       if (!composer || composer.getAttribute('data-thread-swipe-disabled') === 'true'
-        || target?.closest('textarea,input,button,a,[contenteditable="true"],[role="slider"]')
+        || target?.closest('[role="slider"]')
         || window.getSelection()?.toString()) return;
+      const editor = target?.closest('textarea,input');
+      if ((editor instanceof HTMLTextAreaElement || editor instanceof HTMLInputElement)
+        && editor === document.activeElement && editor.selectionStart !== editor.selectionEnd) return;
       const touch = event.touches[0];
       if (touch.clientX < 28) return; // Preserve the workspace drawer's edge gesture.
       for (let el = target; el && el !== composer; el = el.parentElement) {
@@ -88,8 +91,10 @@ export function ThreadPager({ activeKey, items, onSelect, onWarm, children }: {
       const dx = event.touches[0].clientX - gesture.x;
       const dy = event.touches[0].clientY - gesture.y;
       if (!gesture.locked) {
-        if (Math.max(Math.abs(dx), Math.abs(dy)) < 10) return;
-        if (Math.abs(dx) < Math.abs(dy) * 1.4) { gesture = undefined; return; }
+        if (performance.now() - gesture.at > 350) { gesture = undefined; return; }
+        if (Math.max(Math.abs(dx), Math.abs(dy)) < 8) return;
+        if (Math.abs(dy) > Math.abs(dx) * 1.2) { gesture = undefined; return; }
+        if (Math.abs(dx) < Math.abs(dy) * 1.2) return;
         gesture.locked = true;
         node.classList.add('is-dragging');
       }
@@ -97,7 +102,8 @@ export function ThreadPager({ activeKey, items, onSelect, onWarm, children }: {
       suppressClick = true;
       gesture.distance = dx;
       const item = dx < 0 ? gesture.next : gesture.previous;
-      setPreview(item ? { item, direction: dx < 0 ? 1 : -1 } : null);
+      const direction = dx < 0 ? 1 : -1;
+      setPreview(value => item ? (value?.item.key === item.key && value.direction === direction ? value : { item, direction }) : null);
       const drag = item ? Math.max(-gesture.width, Math.min(gesture.width, dx)) : dx * 0.18;
       node.style.setProperty('--thread-drag', `${callbacks.current.reduced ? 0 : drag}px`);
     };
@@ -119,7 +125,7 @@ export function ThreadPager({ activeKey, items, onSelect, onWarm, children }: {
     const cancel = () => { clearTimeout(timer.current); reset(); };
     const click = (event: MouseEvent) => { if (suppressClick) { event.preventDefault(); event.stopPropagation(); suppressClick = false; } };
     node.addEventListener('touchstart', start, { passive: true });
-    node.addEventListener('touchmove', move, { passive: false });
+    node.addEventListener('touchmove', move, { passive: false, capture: true });
     node.addEventListener('touchend', end);
     node.addEventListener('touchcancel', cancel);
     node.addEventListener('click', click, true);
@@ -127,7 +133,7 @@ export function ThreadPager({ activeKey, items, onSelect, onWarm, children }: {
     return () => {
       clearTimeout(timer.current);
       node.removeEventListener('touchstart', start);
-      node.removeEventListener('touchmove', move);
+      node.removeEventListener('touchmove', move, true);
       node.removeEventListener('touchend', end);
       node.removeEventListener('touchcancel', cancel);
       node.removeEventListener('click', click, true);
