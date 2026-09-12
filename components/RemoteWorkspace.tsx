@@ -699,7 +699,7 @@ export function RemoteChat({ sessionId, targetId, onSessionCreated, onControlsCh
   const sessionLabel = detail?.session.name || detail?.session.remoteSessionId || (activeSessionId ? "Remote session" : "New session");
 
   return (
-    <section style={styles.root} aria-label="Remote conversation" data-thread-ready={!detailLoading ? "true" : "false"}>
+    <section style={styles.root} aria-label="Remote conversation" data-thread-ready={detail || error || !activeSessionId ? "true" : "false"}>
       <Dialog open={threadControlsOpen} onOpenChange={setThreadControlsOpen}><DialogContent>
         <DialogTitle>{sessionLabel}</DialogTitle><DialogClose />
         <p>{targetId} · {detail?.session.cwd} · {connected ? "Connected" : "Disconnected"}</p>

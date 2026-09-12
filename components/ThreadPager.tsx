@@ -32,7 +32,7 @@ export function ThreadPager({ activeKey, items, onSelect, onWarm, children }: {
 
   useLayoutEffect(() => {
     root.current?.style.setProperty('--thread-drag', '0px');
-    root.current?.classList.remove('is-settling');
+    root.current?.classList.remove('is-settling', 'is-dragging');
     setPreview(null);
     busy.current = false;
     clearTimeout(timer.current);
@@ -58,7 +58,7 @@ export function ThreadPager({ activeKey, items, onSelect, onWarm, children }: {
     const reset = () => {
       gesture = undefined;
       node.style.setProperty('--thread-drag', '0px');
-      node.classList.remove('is-settling');
+      node.classList.remove('is-settling', 'is-dragging');
       setPreview(null);
       busy.current = false;
     };
@@ -91,6 +91,7 @@ export function ThreadPager({ activeKey, items, onSelect, onWarm, children }: {
         if (Math.max(Math.abs(dx), Math.abs(dy)) < 10) return;
         if (Math.abs(dx) < Math.abs(dy) * 1.4) { gesture = undefined; return; }
         gesture.locked = true;
+        node.classList.add('is-dragging');
       }
       event.preventDefault();
       suppressClick = true;
