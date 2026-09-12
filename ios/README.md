@@ -26,13 +26,15 @@ xcodebuild -project Nook.xcodeproj -scheme Nook \
   -derivedDataPath /tmp/nook-ios-derived CODE_SIGNING_ALLOWED=NO test
 ```
 
-`NookServerURL` and `NookLoginURL` are Info.plist build settings in `project.yml`.
+`NOOK_SERVER_URL` and `NOOK_LOGIN_URL` in `project.yml` populate the generated
+Info.plist.
 Defaults are `https://omp-amos.vxn.rs/` and `https://auth.vxn.rs/`. Login navigation
 is allowed, but only the exact Nook origin and main frame can access audio.
 External links open outside the app. Cookie storage survives app launches.
 
-For local development, override `INFOPLIST_KEY_NookServerURL` at build time with
-a reachable HTTPS development URL. Start the web server with
+For local development, override `NOOK_SERVER_URL` at build time with
+a reachable development URL (for Simulator, `http://127.0.0.1:30178`).
+Local networking is allowed; public servers still require HTTPS. Start the web server with
 `OMP_WEB_PACKAGE_DIR` explicitly set to this source checkout. The local dictation
 service must also be configured; the bridge does not embed a transcription service.
 
