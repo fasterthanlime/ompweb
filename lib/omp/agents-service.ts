@@ -1,5 +1,5 @@
 import { execFileSync } from "child_process";
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
@@ -230,7 +230,9 @@ export function getAgentFilePath(scopeDir: string, name: string): string {
 function sameAgentPath(left: string, right: string): boolean {
   const a = resolve(left);
   const b = resolve(right);
-  return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
+  if (a === b) return true;
+  try { return realpathSync(a) === realpathSync(b); }
+  catch { return false; }
 }
 
 export function validateAgentFileReference(scopeDir: string, name: string): void {
@@ -296,10 +298,9 @@ export function writeAgent(scopeDir: string, name: string, payload: AgentPayload
   writeFileSync(tmpPath, serialized, { encoding: "utf8", flag: "wx" });
   let displacedPath: string | undefined;
   try {
-    // Windows cannot replace an existing file with renameSync, including a
-    // case-only rename (Scout.md -> scout.md). Move the old file aside first
-    // so updates and case-only renames remain atomic from the caller's view.
-    if (process.platform === "win32" && replacesPreviousPath && existsSync(filePath)) {
+    // Move aside case-only replacements on case-insensitive volumes so the
+    // directory entry adopts the requested spelling, including on macOS.
+    if (replacesPreviousPath && existsSync(filePath) && (process.platform === "win32" || previousPath !== filePath)) {
       displacedPath = `${filePath}.${process.pid}.${Date.now()}.old`;
       renameSync(filePath, displacedPath);
     }
