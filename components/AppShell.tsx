@@ -25,6 +25,10 @@ import { buildAtMentionText, buildFileAtMentionsText, buildFileLineMentionText }
 import { getInitialNavigation } from "@/lib/initial-navigation";
 import { comparableProjectPath } from "@/lib/comparable-path";
 import { showCompletionNotification } from "@/lib/browser-notifications";
+import { ThreadPager } from "./ThreadPager";
+import type { ThreadNavigationItem } from "@/lib/thread-navigation";
+import { prefetchLocalSession } from "@/hooks/useAgentSession";
+import { prefetchRemoteSession } from "./RemoteWorkspace";
 import { RemoteChat } from "./RemoteWorkspace";
 import { RemoteWorkspaceList, type RemoteTargetSummary, type RemoteThreadSummary } from "./RemoteWorkspaceList";
 import type { SessionInfo, SessionTreeNode } from "@/lib/types";
@@ -155,6 +159,7 @@ export function AppShell() {
     window.addEventListener("nook:remote-thread-archived",archived);window.addEventListener("nook:remote-thread-restored",restored);
     return ()=>{window.removeEventListener("nook:remote-thread-archived",archived);window.removeEventListener("nook:remote-thread-restored",restored);};
   },[remoteSelection?.sessionId,router]);
+  const [threadOrder, setThreadOrder] = useState<ThreadNavigationItem[]>([]);
   const [remoteThreads, setRemoteThreads] = useState<RemoteThreadSummary[]>([]);
   const [remoteTargets, setRemoteTargets] = useState<RemoteTargetSummary[]>([]);
   const lastThreadRestoredRef = useRef(false);
@@ -679,6 +684,19 @@ export function AppShell() {
     }
   }, [router, isMobile]);
 
+  const handleSwipeThread = useCallback((item: ThreadNavigationItem) => {
+    if (item.kind === "local") { handleSelectSession(item.session); return; }
+    const { targetId, id: sessionId } = item.thread;
+    setRemoteSelection({ targetId, sessionId });
+    setActiveTopPanel(null);
+    if (isMobile) setSidebarOpen(false);
+    router.replace(`?remoteTarget=${encodeURIComponent(targetId)}&remoteSession=${encodeURIComponent(sessionId)}`, { scroll: false });
+  }, [handleSelectSession, isMobile, router]);
+  const warmSwipeThread = useCallback((item: ThreadNavigationItem, signal: AbortSignal) => {
+    if (item.kind === "local") void prefetchLocalSession(item.session.id, signal);
+    else void prefetchRemoteSession(item.thread.id, signal);
+  }, []);
+
   const handleNewSession = useCallback((_sessionId: string, cwd: string) => {
     setRemoteSelection(null);
     setSelectedSession(null);
@@ -920,6 +938,7 @@ export function AppShell() {
         currentModel={null}
       />
       <SessionSidebar
+        onThreadOrderChange={setThreadOrder}
         remoteActive={!!remoteSelection}
         remoteThreads={remoteThreads}
         selectedRemoteSessionId={remoteSelection?.sessionId}
@@ -1523,7 +1542,7 @@ export function AppShell() {
         </div>
 
         {/* Chat content */}
-        <div style={{ flex: 1, overflow: "hidden", position: "relative" }}>
+        <ThreadPager activeKey={remoteSelection?.sessionId ? `remote:${remoteSelection.sessionId}` : selectedSession?.id ? `local:${selectedSession.id}` : null} items={threadOrder} onSelect={handleSwipeThread} onWarm={warmSwipeThread}>
           {remoteSelection ? <RemoteChat key={`${remoteSelection.targetId}:${remoteSelection.sessionId ?? "new"}`} targetId={remoteSelection.targetId} sessionId={remoteSelection.sessionId} onSessionCreated={(sessionId) => {
             setRemoteSelection(current => current ? {...current,sessionId} : current);
             setRemoteRefresh(value=>value+1);
@@ -1604,7 +1623,7 @@ export function AppShell() {
               </div>
             )
           )}
-        </div>
+        </ThreadPager>
       </main>
 
       {/* Right panel: file viewer — always mounted, width animated via CSS */}

@@ -3,6 +3,10 @@ import SwiftUI
 import WebKit
 import OSLog
 
+final class ComposerWebView: WKWebView {
+    override var inputAccessoryView: UIView? { nil }
+}
+
 struct NookWebView: UIViewControllerRepresentable {
     func makeUIViewController(context: Context) -> NookWebController { NookWebController() }
     func updateUIViewController(_ controller: NookWebController, context: Context) {}
@@ -23,7 +27,7 @@ final class NookWebController: UIViewController, WKNavigationDelegate, WKUIDeleg
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .default()
         configuration.userContentController.addScriptMessageHandler(self, contentWorld: .page, name: "nookAudioV1")
-        webView = WKWebView(frame: .zero, configuration: configuration)
+        webView = ComposerWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = self
         webView.uiDelegate = self
         #if DEBUG

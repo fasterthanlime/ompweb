@@ -97,6 +97,16 @@ function cacheSessionSnapshot(sessionId: string, data: SessionData, pagination: 
   }
 }
 
+export async function prefetchLocalSession(id: string, signal: AbortSignal): Promise<void> {
+  if (warmSessionCache.has(id)) return;
+  try {
+    const response = await fetch(`/api/sessions/${encodeURIComponent(id)}?limit=${SESSION_PAGE_SIZE}&deferThinking=1&deferMedia=1`, { signal });
+    if (!response.ok) return;
+    const data = await response.json() as SessionData;
+    if (!signal.aborted && !warmSessionCache.has(id)) cacheSessionSnapshot(id, data, data.pagination ?? { hasMore: false, before: null });
+  } catch { /* Prefetch does not change the selected thread's error state. */ }
+}
+
 interface StreamingState {
   isStreaming: boolean;
   streamingMessage: Partial<AgentMessage> | null;

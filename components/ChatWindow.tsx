@@ -566,6 +566,7 @@ export function ChatWindow({ session, newSessionCwd, toolCallsDefaultCollapsed =
   return (
     <div
       className="relative flex h-full flex-col overflow-hidden"
+      data-thread-ready="true"
       onDragEnter={handleDragEnter}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}

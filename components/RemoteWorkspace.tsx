@@ -90,6 +90,17 @@ function cacheRemoteDetail(id: string, detail: RemoteDetail): void {
   }
 }
 
+export async function prefetchRemoteSession(id: string, signal: AbortSignal): Promise<void> {
+  if (remoteDetailCache.has(id)) return;
+  try {
+    const payload = await readApi(await fetch(`/api/remote/${encodeURIComponent(id)}?limit=${REMOTE_PAGE_SIZE}`, { signal, cache: "no-store" }));
+    const session = extractSession(payload);
+    if (!signal.aborted && session && !remoteDetailCache.has(id)) {
+      cacheRemoteDetail(id, mergeRemotePage(null, normalizePage(payload), session, payload.running === true, typeof payload.error === "string" ? payload.error : undefined));
+    }
+  } catch { /* Selecting the thread performs the authoritative load and reports errors. */ }
+}
+
 function payloadRecord(payload: ApiPayload | RemoteEventFrame): Record<string, unknown> {
   const data = "data" in payload ? payload.data : undefined;
   if (isRecord(data)) return data;
@@ -688,7 +699,7 @@ export function RemoteChat({ sessionId, targetId, onSessionCreated, onControlsCh
   const sessionLabel = detail?.session.name || detail?.session.remoteSessionId || (activeSessionId ? "Remote session" : "New session");
 
   return (
-    <section style={styles.root} aria-label="Remote conversation">
+    <section style={styles.root} aria-label="Remote conversation" data-thread-ready={!detailLoading ? "true" : "false"}>
       <Dialog open={threadControlsOpen} onOpenChange={setThreadControlsOpen}><DialogContent>
         <DialogTitle>{sessionLabel}</DialogTitle><DialogClose />
         <p>{targetId} · {detail?.session.cwd} · {connected ? "Connected" : "Disconnected"}</p>

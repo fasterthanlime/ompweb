@@ -2123,6 +2123,8 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
         )}
           <div
             className="chat-input-shell"
+            data-thread-swipe
+            data-thread-swipe-disabled={dictationActive || submitting ? "true" : "false"}
             style={{
               display: "flex",
               flexDirection: "column",
