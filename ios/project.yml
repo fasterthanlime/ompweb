@@ -27,6 +27,11 @@ targets:
       properties:
         NookServerURL: $(NOOK_SERVER_URL)
         NookLoginURL: $(NOOK_LOGIN_URL)
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
     settings:
