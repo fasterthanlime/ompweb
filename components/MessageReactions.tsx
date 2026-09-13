@@ -123,7 +123,7 @@ function ensureStore(threadId: string): Store {
   return store;
 }
 
-function useThreadExpression(threadId: string | undefined): ThreadExpressionState {
+export function useThreadExpression(threadId: string | undefined): ThreadExpressionState {
   const [, setVersion] = useState(0);
   useEffect(() => {
     if (!threadId || typeof window === "undefined") return;

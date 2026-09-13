@@ -897,7 +897,6 @@ export function AppShell() {
   // While restoring initial session from URL, don't show the placeholder
   const showPlaceholder = initialSessionRestored && !showChat;
 
-  const activeCwdName = activeCwd ? getFileName(activeCwd) || activeCwd : null;
   const titleThreadName = remoteSelection ? remoteThreads.find(thread => thread.id === remoteSelection.sessionId)?.name : selectedSession?.name;
   const windowTitle = titleThreadName && titleThreadName !== "Nook" ? `${titleThreadName} — Nook` : "Nook";
 
@@ -1123,9 +1122,7 @@ export function AppShell() {
           <span className="shell-toolbar-language"><LanguageSwitcher /></span>
         </div>
         {(showChat || remoteSelection) && (
-          <div className="shell-mobile-thread-identity" title={remoteSelection ? remoteThreads.find(thread => thread.id === remoteSelection.sessionId)?.name ?? "New thread" : selectedSession?.name ?? activeCwdName ?? "Nook"}>
-            {remoteSelection ? remoteThreads.find(thread => thread.id === remoteSelection.sessionId)?.name ?? "New thread" : selectedSession?.name ?? activeCwdName ?? "Nook"}
-          </div>
+          <div id="thread-work-controls" style={{ flex: 1, minWidth: 0, overflow: "hidden" }} />
         )}
         {remoteSelection && <span role="status" title={`Remote ${remoteConnection}`} style={{display:"inline-flex",alignItems:"center",gap:5,fontSize:11,color:remoteConnection === "connected" ? "var(--text-muted)" : "var(--status-warning)",whiteSpace:"nowrap",padding:"0 6px"}}><span aria-hidden="true" style={{width:6,height:6,borderRadius:"50%",background:remoteConnection === "connected" ? "var(--status-success)" : "var(--status-warning)"}}/>{remoteConnection === "connected" ? "Connected" : remoteConnection === "connecting" ? "Connecting…" : remoteConnection === "reconnecting" ? "Reconnecting…" : "Disconnected"}</span>}
         {(remoteSelection?.sessionId ?? selectedSession?.id) && <VisualFrames key={remoteSelection?.sessionId ?? selectedSession?.id} sessionId={(remoteSelection?.sessionId ?? selectedSession?.id)!} mode="index" />}

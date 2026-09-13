@@ -14,7 +14,8 @@ import { useAudio } from "@/hooks/useAudio";
 import { CommittedTranscript } from "./CommittedTranscript";
 import { Dialog, DialogContent, DialogTitle, DialogClose } from "./ui/primitives";
 import { ThreadWorkHistory } from "./ThreadWorkHistory";
-import { ComposerPanels } from "./ComposerPanels";
+import { ThreadWorkControls } from "./ThreadWorkControls";
+import { LiveActivity } from "./LiveActivity";
 import { SubagentTranscriptDialog } from "./SubagentTranscriptDialog";
 import { parseSubagentSnapshot, type SubagentInfo } from "@/lib/subagent-types";
 type RemoteSession = {
@@ -721,10 +722,11 @@ export function RemoteChat({ sessionId, targetId, onSessionCreated, onControlsCh
           ) : (
             <div style={styles.centerState}><Cloud size={20} color="var(--accent)" aria-hidden="true" /><strong>{activeSessionId ? `Ready on ${targetId || "remote host"}` : `Start a session on ${targetId || "a remote host"}`}</strong><span style={styles.muted}>{activeSessionId ? "Send a prompt to continue this remote session." : "Your first prompt will create the remote session."}</span></div>
           )}
+          <LiveActivity threadId={activeSessionId ?? undefined} busy={isStreaming || !!controls?.isCompacting} message={detail?.messages[detail.messages.length - 1]} />
         </div>
       </div>
 
-      <div style={{ width: "100%", maxWidth: CHAT_COLUMN_MAX_WIDTH, margin: "0 auto", padding: "0 16px" }}><ComposerPanels onAddTask={appendTask} todoPhases={controls?.todoPhases ?? []} subagents={subagents} onSelectSubagent={setSelectedSubagent} busy={isStreaming || controls?.isCompacting} /></div>
+      <ThreadWorkControls onAddTask={appendTask} todoPhases={controls?.todoPhases ?? []} subagents={subagents} onSelectSubagent={setSelectedSubagent} busy={isStreaming || controls?.isCompacting} />
       <ThreadWorkHistory goal={controls?.goal} phases={controls?.todoPhases ?? []} subagents={subagents} onSelectSubagent={setSelectedSubagent} onAddTask={appendTask} onGoalAction={action => updateControl({ type: "set_goal", action }, true)} />
       <SubagentTranscriptDialog remote subagent={selectedSubagent} sessionId={activeSessionId} transcriptVersion={0} onClose={() => setSelectedSubagent(null)} />
       <div style={{ ...styles.composer, width: "100%", maxWidth: CHAT_COLUMN_MAX_WIDTH, margin: "0 auto" }}><ChatInput ref={composerRef} onSend={send} onAbort={abort} onInterruptAndReply={interruptAndReply} isStreaming={isStreaming} draftKey={composerDraftKey} model={controls?.model} modelList={controls?.models} modelNameOverride={controls?.model?.name} onModelChange={(provider, modelId) => void updateControl({ type: "set_model", provider, modelId })} thinkingLevel={controls?.thinkingLevel} onThinkingLevelChange={level => void updateControl({ type: "set_thinking_level", level })} contextUsage={controls?.contextUsage} isCompacting={controls?.isCompacting} onCompact={activeSessionId ? () => void updateControl({ type: "compact" }) : undefined} onAbortCompaction={() => void updateControl({ type: "abort_compaction" })} activeGoal={controls?.goal} onAudioUnlock={unlockAudio} /></div>

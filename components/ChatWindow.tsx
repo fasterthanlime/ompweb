@@ -12,7 +12,8 @@ import { SubagentTranscriptDialog } from "./SubagentTranscriptDialog";
 import { ChatMinimap, useMessageRefs } from "./ChatMinimap";
 import { ThreadWorkHistory } from "./ThreadWorkHistory";
 import { sendAgentCommand } from "@/lib/agent-client";
-import { ComposerPanels } from "./ComposerPanels";
+import { ThreadWorkControls } from "./ThreadWorkControls";
+import { LiveActivity } from "./LiveActivity";
 import { CHAT_COLUMN_MAX_WIDTH, CHAT_MINIMAP_WIDTH } from "@/lib/chat-layout";
 import { useAgentSession, type NoticeItem, type SubagentInfo } from "@/hooks/useAgentSession";
 import { useAudio } from "@/hooks/useAudio";
@@ -787,6 +788,7 @@ export function ChatWindow({ session, newSessionCwd, toolCallsDefaultCollapsed =
                 sessionId={session?.id ?? sessionIdRef.current ?? undefined}
               />
             )}
+            <LiveActivity threadId={session?.id ?? sessionIdRef.current ?? undefined} busy={sessionBusy || isCompacting} message={streamState.streamingMessage as AgentMessage | null ?? messages[messages.length - 1]} />
 
             <div ref={messagesEndRef} />
             </div>
@@ -819,7 +821,7 @@ export function ChatWindow({ session, newSessionCwd, toolCallsDefaultCollapsed =
                 />
               </div>
             )}
-            <ComposerPanels
+            <ThreadWorkControls
               onAddTask={appendTask}
               todoPhases={todoPhases}
               subagents={subagents}

@@ -359,9 +359,10 @@ export function SubagentsPanel({ subagents, onSelectSubagent, defaultHistoryOpen
  * dismissal handled by the primitive). Only real work pulses: with nothing
  * running, both segments settle to a quiet history/plan affordance instead
  * of a "0/N" gauge. */
-export function ComposerPanels({ todoPhases, subagents, onSelectSubagent, busy = false, defaultExpanded = false, onAddTask, history = false }: {
+export function ComposerPanels({ todoPhases, subagents, onSelectSubagent, busy = false, defaultExpanded = false, onAddTask, history = false, header = false }: {
   onAddTask?: (content: string) => Promise<void>;
   history?: boolean;
+  header?: boolean;
   todoPhases: TodoPhase[];
   subagents: SubagentInfo[];
   onSelectSubagent: (subagent: SubagentInfo) => void;
@@ -423,9 +424,8 @@ export function ComposerPanels({ todoPhases, subagents, onSelectSubagent, busy =
   );
   const runningCount = roster.filter((subagent) => isRunningSubagent(subagent)).length;
   return (
-    <div style={{ marginBottom: 8 }}>
-      <div className="flex flex-wrap items-center">
-        {busy && <span role="status" style={{display:"inline-flex",alignItems:"center",gap:6,padding:"4px 8px",fontSize:11,color:"var(--text-muted)"}}><span className="live-status-dot live-pulse" style={{width:6,height:6,borderRadius:"50%",background:"var(--accent)"}}/>Working</span>}
+    <div style={{ marginBottom: header ? 0 : 8, minWidth: 0 }}>
+      <div className="flex items-center" style={{ flexWrap: header ? "nowrap" : "wrap", minWidth: 0 }}>
         {hasTodo && (
           <Popover.Root defaultOpen={defaultExpanded} defaultTriggerId={todoTriggerId}>
             <Popover.Trigger
@@ -442,7 +442,7 @@ export function ComposerPanels({ todoPhases, subagents, onSelectSubagent, busy =
               )}
             />
             <Popover.Portal>
-              <Popover.Positioner side="top" align="start" sideOffset={8} collisionPadding={8}>
+              <Popover.Positioner side={header ? "bottom" : "top"} align="start" sideOffset={8} collisionPadding={8}>
                 <Popover.Popup className="composer-menu composer-panel-popup composer-todo-popup">
                   <Popover.Title className="composer-panel-popup-title">{t("chatWindow.todoList")}</Popover.Title>
                   <div className="composer-panel-scroll">
@@ -484,7 +484,7 @@ export function ComposerPanels({ todoPhases, subagents, onSelectSubagent, busy =
               )}
             />
             <Popover.Portal>
-              <Popover.Positioner side="top" align="start" sideOffset={8} collisionPadding={8}>
+              <Popover.Positioner side={header ? "bottom" : "top"} align="start" sideOffset={8} collisionPadding={8}>
                 <Popover.Popup className="composer-menu composer-panel-popup composer-agents-popup">
                   <Popover.Title className="composer-panel-popup-title">{t("chatWindow.subagentsPanel")}</Popover.Title>
                   <div className="composer-panel-scroll">

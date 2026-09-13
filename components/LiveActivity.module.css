@@ -1,0 +1,41 @@
+.activity {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+  min-height: 38px;
+  margin: 0;
+  padding: 4px 16px 10px;
+  color: var(--text-muted);
+  font-size: 16px;
+  line-height: 1.5;
+}
+
+.expression {
+  flex: 0 0 auto;
+  color: var(--accent);
+  font-size: 16px;
+  line-height: 1;
+  white-space: nowrap;
+  animation: expression-breathe 2.4s var(--ease-out-warm) infinite;
+}
+
+.thought {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+
+@keyframes expression-breathe {
+  0%, 100% { opacity: 0.72; transform: translateY(0); }
+  50% { opacity: 1; transform: translateY(-1px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .expression {
+    animation: none;
+  }
+}
