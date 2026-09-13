@@ -29,24 +29,20 @@ export function parseActiveGoal(value: unknown): ActiveGoal | null {
 }
 
 /**
- * Guidance for the model is carried by native OMP host-tool definitions and
- * host-tool results, never by rewriting a user's visible prompt. Keep it
- * short: these are occasional interaction affordances, not a checklist.
+ * Baseline guidance also accompanies autonomous turns. User submissions carry
+ * a separate, stateful interaction reminder with their reaction alias.
  */
 export const THREAD_INTERACTION_GUIDANCE = [
   "Keep interaction touches occasional and useful, not automatic every turn.",
-  "React to a recent message when a brief acknowledgment is enough.",
+  "Use react_to_message warmly, alone or alongside a textual response; the current user target may be supplied in a system-reminder.",
   "Celebrate only a real milestone, not routine progress.",
-  "Use show_visual for a concise explanatory diagram or visual when it improves understanding.",
-  "Use set_expression for an occasional natural kaomoji and short caption; it is optional and never a substitute for required work.",
+  "Use set_expression to update a kaomoji and caption when the current one no longer fits.",
 ].join(" ");
 const interactionReminderCounts = new Map<string, number>();
 
 /**
- * Host-tool results are the only server-owned context injection point exposed
- * by the RPC contract. Every fourth server result gets a compact reminder;
- * ordinary results stay unchanged, and no user prompt or visible transcript
- * entry is rewritten.
+ * Supplemental host-tool reminders retain the startup guidance in long turns.
+ * User submissions carry stateful reminders independently of this counter.
  */
 export function appendInteractionGuidance(sessionId: string, text: string): string {
   const count = (interactionReminderCounts.get(sessionId) ?? 0) + 1;

@@ -1,5 +1,6 @@
 "use client";
 
+import { stripInteractionReminder } from "@/lib/interaction-reminder-text";
 import { memo, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import { ChevronDown } from "lucide-react";
 import type { AgentMessage, AssistantContentBlock, AssistantMessage, CustomMessage, ToolResultMessage } from "@/lib/types";
@@ -18,14 +19,13 @@ export interface ConversationMeta {
 export function getUserInputText(message: AgentMessage): string | null {
   if (message.role !== "user") return null;
   if (typeof message.content === "string") {
-    const text = message.content.trim();
+    const text = stripInteractionReminder(message.content).trim();
     return text.length > 0 ? text : null;
   }
-  const text = message.content
+  const text = stripInteractionReminder(message.content
     .filter((block) => block.type === "text")
     .map((block) => block.text)
-    .join("\n")
-    .trim();
+    .join("\n")).trim();
   return text.length > 0 ? text : null;
 }
 

@@ -1,3 +1,6 @@
+import { prepareInteractionPrompt } from "./interaction-reminder";
+import { extractInteractionAlias } from "./interaction-reminder-text";
+import { getThreadExpression } from "./thread-expression";
 import { remoteSubagentHistory, remoteSubagentArtifact } from "./remote-subagent-history";
 import { readRemotePageRange, isPagingConflict, type RemotePageCursor } from "./remote-paging";
 import { randomUUID } from "crypto";
@@ -465,6 +468,7 @@ function remoteReactionTargets(id: string): ReactionTarget[] {
   return messages.slice(start).map((message, offset) => ({
     id: getRemoteReactionTargetId(message, runtimeFor(id).messageStartIndex + start + offset),
     role: message.role,
+    reminderAlias: extractInteractionAlias("content" in message ? typeof message.content === "string" ? message.content : Array.isArray(message.content) ? message.content.map(block => "text" in block ? block.text : "").join("\n") : "" : ""),
     ...(typeof message.timestamp === "number" ? { timestamp: message.timestamp } : {}),
     preview: previewMessage(message),
   }));
@@ -863,7 +867,7 @@ export async function sendRemotePrompt(id: string, message: string, rawImages?: 
   runtime.error = undefined;
   const pending = proc.sendCommand({
     type: "prompt",
-    message,
+    message: runtime.goal && message === goalPrompt(runtime.goal) ? message : prepareInteractionPrompt(id, message, getThreadExpression(id)),
     ...(images?.length ? { images } : {}),
   });
   runtime.pendingPrompt = pending;
@@ -895,7 +899,7 @@ export async function submitRemotePrompt(id: string, message: string, rawImages?
   runtime.running = true;
   emitSnapshot(id);
   try {
-    const result = await proc.sendCommand({ type: "abort_and_prompt", message, ...(images?.length ? { images } : {}) });
+    const result = await proc.sendCommand({ type: "abort_and_prompt", message: prepareInteractionPrompt(id, message, getThreadExpression(id)), ...(images?.length ? { images } : {}) });
     runtime.interrupting = false;
     queueRefreshMessages(id, proc);
     return result;
@@ -904,6 +908,12 @@ export async function submitRemotePrompt(id: string, message: string, rawImages?
     runtime.error = sanitizeError(error);
     throw connectionError(error);
   }
+}
+export async function notifyRemoteReaction(id: string, message: string): Promise<void> {
+  await connect(id);
+  const proc = runtimeFor(id).proc;
+  if (!proc?.isAlive) throw new RemoteSessionError("Remote session is disconnected", "remote_disconnected", 503);
+  await proc.sendCommand({ type: "steer", message });
 }
 
 export async function abortRemoteSession(id: string): Promise<unknown> {

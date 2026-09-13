@@ -1,3 +1,7 @@
+import { reactionNotification } from "@/lib/reaction-notification";
+import { getRpcSession, startRpcSession, resolveSpawnCwdResult } from "@/lib/rpc-manager";
+import { readSessionHeader } from "@/lib/session-reader";
+import { getSessionAdvisorEnabled } from "@/lib/session-preferences";
 import { NextResponse } from "next/server";
 import { parseJsonWithinLimit, RequestBodyTooLargeError } from "@/lib/bounded-form-data";
 import { apiErrorResponse, resolveSessionPathOr404 } from "@/lib/api-utils";
@@ -5,9 +9,8 @@ import {
   getLocalReactionTargets,
   getThreadExpression,
   updateThreadExpression,
-  type ThreadExpressionAction,
 } from "@/lib/thread-expression";
-import { getRemoteReactionTargets, isRemoteSession, RemoteSessionError } from "@/lib/remote-sessions";
+import { getRemoteReactionTargets, isRemoteSession, RemoteSessionError, notifyRemoteReaction } from "@/lib/remote-sessions";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -66,6 +69,26 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         return NextResponse.json({ error: "messageId and emoji are required", code: "invalid_reaction" }, { status: 400 });
       }
       const state = updateThreadExpression(id, { action, messageId: body.messageId, emoji: body.emoji, actor: "user" }, targets);
+      const target = targets.find(target => target.id === body.messageId);
+      if (target?.role === "assistant") {
+        const added = state.reactions[body.messageId]?.some(reaction => reaction.actor === "user" && reaction.emoji === body.emoji) ?? false;
+        const message = reactionNotification(target, body.emoji, added);
+        try {
+          if (thread.remote) {
+            await notifyRemoteReaction(id, message);
+          } else {
+            let session = getRpcSession(id);
+            if (!session?.isAlive()) {
+              const header = readSessionHeader(thread.filePath!);
+              const { cwd } = resolveSpawnCwdResult(header?.cwd);
+              session = (await startRpcSession(id, thread.filePath!, cwd, undefined, getSessionAdvisorEnabled(id), header?.cwd)).session;
+            }
+            await session.send({ type: "reaction_notification", message });
+          }
+        } catch {
+          return NextResponse.json({ ...state, notificationError: "Reaction saved, but the agent could not be notified." });
+        }
+      }
       return NextResponse.json(state);
     }
     if (action === "celebrate") {

@@ -1,3 +1,5 @@
+import { prepareInteractionPrompt } from "./interaction-reminder";
+import { getThreadExpression } from "./thread-expression";
 import { appendUserTask } from "./user-tasks";
 import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "fs";
 import { homedir } from "os";
@@ -1083,6 +1085,9 @@ export class AgentSessionWrapper {
     if (!this.isAlive()) throw new Error("Session is no longer running");
     this.resetIdleTimer();
     const type = command.type as string;
+    if (["prompt", "abort_and_prompt", "steer", "follow_up"].includes(type) && typeof command.message === "string" && command.message !== INTERRUPTED_TURN_RECOVERY_PROMPT && (!this.goal || command.message !== goalPrompt(this.goal))) {
+      command = { ...command, message: prepareInteractionPrompt(this._sessionId, command.message, getThreadExpression(this._sessionId)) };
+    }
     if (["abort", "abort_and_prompt", "abort_compaction", "fork", "new_session", "switch_session"].includes(type) && this.goal?.status === "active") {
       this.updateGoal({ ...this.goal, status: "paused", pauseReason: "user", summary: "Paused by user." });
     }
@@ -1096,6 +1101,10 @@ export class AgentSessionWrapper {
     if (unsupported) throw new RpcCommandError(type, unsupported, "unsupported");
 
     switch (type) {
+      case "reaction_notification": {
+        await this.proc.sendCommand({ type: "steer", message: command.message as string });
+        return null;
+      }
       case "append_user_task": {
         const todoPhases = await appendUserTask(this.proc, command.content);
         this.emit({ type: "todo_updated", todoPhases });

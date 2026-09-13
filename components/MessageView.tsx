@@ -1,4 +1,5 @@
 "use client";
+import { stripInteractionReminder } from "@/lib/interaction-reminder-text";
 
 import { SmoothSurface } from "./SmoothSurface";
 import { useMessageSelection } from "@/hooks/useMessageSelection";
@@ -242,13 +243,13 @@ function UserMessageView({ message, showTimestamp = true, cwd, onOpenFile, entry
     return () => observer.disconnect();
   }, [message.content]);
 
-  const content =
+  const content = stripInteractionReminder(
     typeof message.content === "string"
       ? message.content
       : message.content
           .filter((b): b is TextContent => b.type === "text")
           .map((b) => b.text)
-          .join("\n");
+          .join("\n"));
 
   const imageBlocks: ImageContent[] =
     typeof message.content === "string"

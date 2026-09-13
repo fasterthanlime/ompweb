@@ -1,5 +1,6 @@
 "use client";
 
+import { toast } from "./ui/toast";
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { LoaderCircle, SmilePlus, Sparkles } from "lucide-react";
 import EmojiPicker, { EmojiStyle, Theme, type EmojiClickData } from "emoji-picker-react";
@@ -149,7 +150,9 @@ async function postAction(threadId: string, action: Record<string, unknown>): Pr
     body: JSON.stringify(action),
   });
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
-  return normalizeState(await response.json());
+  const payload = await response.json();
+  if (typeof payload.notificationError === "string") toast.error(payload.notificationError);
+  return normalizeState(payload);
 }
 
 function readCelebrationsPreference(): boolean {

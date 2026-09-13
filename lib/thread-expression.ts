@@ -4,6 +4,8 @@ import { dirname } from "path";
 import { randomUUID } from "crypto";
 import type { AgentMessage, SessionEntry } from "./types";
 import { getSessionEntries } from "./session-reader";
+import { resolveInteractionAlias } from "./interaction-reminder";
+import { extractInteractionAlias, stripInteractionReminder } from "./interaction-reminder-text";
 
 export type ReactionActor = "user" | "agent";
 export interface ThreadReaction { emoji: string; actor: ReactionActor }
@@ -11,10 +13,11 @@ export interface ThreadCelebration { id: string; effect: "confetti" | "sparkles"
 export interface ThreadExpressionState {
   expression: string;
   caption: string;
+  expressionUpdatedAt?: number;
   reactions: Record<string, ThreadReaction[]>;
   celebration?: ThreadCelebration;
 }
-export interface ReactionTarget { id: string; role: string; timestamp?: number; preview: string }
+export interface ReactionTarget { id: string; role: string; timestamp?: number; preview: string; reminderAlias?: string }
 
 export const MAX_EXPRESSION_CODEPOINTS = 32;
 export const MAX_CAPTION_CODEPOINTS = 120;
@@ -34,6 +37,9 @@ function cloneState(value: ThreadExpressionState): ThreadExpressionState {
   return {
     expression: value.expression,
     caption: value.caption,
+    ...(typeof value.expressionUpdatedAt === "number" && Number.isFinite(value.expressionUpdatedAt)
+      ? { expressionUpdatedAt: value.expressionUpdatedAt }
+      : {}),
     reactions: Object.fromEntries(Object.entries(value.reactions).map(([id, reactions]) => [id, reactions.map((reaction) => ({ ...reaction }))])),
     ...(value.celebration ? { celebration: { ...value.celebration } } : {}),
   };
@@ -64,6 +70,9 @@ function parseState(value: unknown): ThreadExpressionState | null {
   const record = value as Record<string, unknown>;
   const expression = typeof record.expression === "string" ? limitCodePoints(record.expression, MAX_EXPRESSION_CODEPOINTS) : "";
   const caption = typeof record.caption === "string" ? limitCodePoints(record.caption, MAX_CAPTION_CODEPOINTS) : "";
+  const expressionUpdatedAt = typeof record.expressionUpdatedAt === "number" && Number.isFinite(record.expressionUpdatedAt)
+    ? record.expressionUpdatedAt
+    : undefined;
   const reactions: Record<string, ThreadReaction[]> = {};
   if (record.reactions && typeof record.reactions === "object" && !Array.isArray(record.reactions)) {
     for (const [messageId, raw] of Object.entries(record.reactions as Record<string, unknown>).slice(-MAX_REACTION_TARGETS)) {
@@ -86,7 +95,13 @@ function parseState(value: unknown): ThreadExpressionState | null {
       celebration = { id: candidate.id, messageId: candidate.messageId, effect: candidate.effect };
     }
   }
-  return { expression, caption, reactions, ...(celebration ? { celebration } : {}) };
+  return {
+    expression,
+    caption,
+    ...(expressionUpdatedAt === undefined ? {} : { expressionUpdatedAt }),
+    reactions,
+    ...(celebration ? { celebration } : {}),
+  };
 }
 
 function loadStore(): StateStore {
@@ -177,14 +192,32 @@ export function getReactionTargetId(role: string, timestamp: number | undefined,
 }
 
 export function previewMessage(message: AgentMessage): string {
-  if ("content" in message && typeof message.content === "string") return message.content.slice(0, 160);
+  if ("content" in message && typeof message.content === "string") return stripInteractionReminder(message.content).slice(0, 160);
   if ("content" in message && Array.isArray(message.content)) {
     const text = message.content.find((part) => part && part.type === "text");
-    if (text && "text" in text && typeof text.text === "string") return text.text.slice(0, 160);
+    if (text && "text" in text && typeof text.text === "string") return stripInteractionReminder(text.text).slice(0, 160);
   }
   if (message.role === "toolResult") return message.toolName ? `Tool result: ${message.toolName}` : "Tool result";
   if (message.role === "bashExecution") return `$ ${message.command}`.slice(0, 160);
   return message.role;
+}
+
+function fullMessageText(message: AgentMessage): string {
+  if ("content" in message && typeof message.content === "string") return message.content;
+  if ("content" in message && Array.isArray(message.content)) {
+    return message.content
+      .map((part) => {
+        if (!part || typeof part !== "object" || !("text" in part)) return "";
+        const block = part as { text?: unknown };
+        return typeof block.text === "string" ? block.text : "";
+      })
+      .filter(Boolean)
+      .join("\n");
+  }
+  if (message.role === "bashExecution") return `${message.command}\n${message.output}`;
+  if (message.role === "pythonExecution") return `${message.code}\n${message.output}`;
+  if (message.role === "fileMention") return message.files.map((file) => `${file.path}\n${file.content}`).join("\n");
+  return "";
 }
 
 
@@ -193,13 +226,19 @@ export function getLocalReactionTargets(filePath: string): ReactionTarget[] {
   const entries = getSessionEntries(filePath);
   return entries.filter((entry): entry is Extract<SessionEntry, { type: "message" }> => entry.type === "message")
     .slice(-MAX_REACTION_TARGETS)
-    .map((entry) => ({
-      id: entry.id,
-      role: entry.message.role,
-      ...(typeof entry.message.timestamp === "number" ? { timestamp: entry.message.timestamp } : {}),
-      preview: previewMessage(entry.message),
-    }));
+    .map((entry) => {
+      const reminderAlias = extractInteractionAlias(fullMessageText(entry.message));
+      return {
+        id: entry.id,
+        role: entry.message.role,
+        ...(typeof entry.message.timestamp === "number" ? { timestamp: entry.message.timestamp } : {}),
+        preview: previewMessage(entry.message),
+        ...(reminderAlias ? { reminderAlias } : {}),
+      };
+    });
 }
+
+
 
 function requireTarget(targets: ReactionTarget[], messageId: string): void {
   if (typeof messageId !== "string" || !messageId || !targets.some((target) => target.id === messageId)) {
@@ -218,7 +257,7 @@ export function updateThreadExpression(id: string, action: ThreadExpressionActio
   if (action.action === "expression") {
     if ([...action.expression].length > MAX_EXPRESSION_CODEPOINTS) throw new Error(`Expression must be at most ${MAX_EXPRESSION_CODEPOINTS} code points`);
     if ([...action.caption].length > MAX_CAPTION_CODEPOINTS) throw new Error(`Caption must be at most ${MAX_CAPTION_CODEPOINTS} code points`);
-    return commit(id, { ...current, expression: action.expression, caption: action.caption });
+    return commit(id, { ...current, expression: action.expression, caption: action.caption, expressionUpdatedAt: Date.now() });
   }
   requireTarget(targets, action.messageId);
   if (action.action === "celebrate") return commit(id, { ...current, celebration: { id: randomUUID(), messageId: action.messageId, effect: action.effect } });
@@ -239,22 +278,22 @@ export function updateThreadExpression(id: string, action: ThreadExpressionActio
 
 export const REACT_TO_MESSAGE_TOOL = {
   name: "react_to_message", label: "React to Message", loadMode: "essential" as const,
-  description: "React to a recent message with one emoji when a brief acknowledgment is enough; prefer this over a redundant acknowledgment reply. Use naturally and sparingly, never instead of required work or an answer. Celebrate real milestones and use an explanatory visual only when it helps; an occasional kaomoji/caption is optional. Use list_reaction_targets first; only target an id from that list.",
+  description: "React warmly to a user message with an emoji: acknowledge, agree, appreciate, sympathize, or respond playfully. Reactions are welcome alone or alongside a textual answer. Use the current message id from an interaction reminder directly; use list_reaction_targets for other messages. Do not substitute a reaction for required work.",
   parameters: { type: "object", properties: { message_id: { type: "string" }, emoji: { type: "string" } }, required: ["message_id", "emoji"], additionalProperties: false },
 };
 export const SET_EXPRESSION_TOOL = {
   name: "set_expression", label: "Set Expression", loadMode: "essential" as const,
-  description: "Choose an occasional playful kaomoji expression and short thread caption. Keep it natural and modest, never force it every turn, and never use it as a claim of feelings, task status, or a substitute for required work. React or celebrate only when useful, and use an explanatory visual when it improves understanding. Examples: (・ω・) listening, (ง •̀_•́)ง working, (ᵔᴥᵔ) pleased, (；・∀・) sheepish. Invent your own; keep captions one short line.",
+  description: "Choose an occasional playful kaomoji expression and short thread caption. Keep it natural and modest, never force it every turn, and never use it as a claim of feelings, task status, or a substitute for required work. Set the current expression and caption when they should change; reactions or milestone celebrations are optional. Examples: (・ω・) listening, (ง •̀_•́)ง working, (ᵔᴥᵔ) pleased, (；・∀・) sheepish. Invent your own; keep captions one short line.",
   parameters: { type: "object", properties: { expression: { type: "string", maxLength: MAX_EXPRESSION_CODEPOINTS }, caption: { type: "string", maxLength: MAX_CAPTION_CODEPOINTS } }, required: ["expression", "caption"], additionalProperties: false },
 };
 export const LIST_REACTION_TARGETS_TOOL = {
   name: "list_reaction_targets", label: "List Reaction Targets", loadMode: "essential" as const,
-  description: "List recent actual messages in this thread with ids and short previews for reacting or celebrating.",
+  description: "List recent actual messages in this thread with ids and short previews when you need to choose a message for reacting or celebrating. Do not call it when an interaction reminder already supplies the current target id.",
   parameters: { type: "object", properties: {}, additionalProperties: false },
 };
 export const CELEBRATE_TOOL = {
   name: "celebrate", label: "Celebrate", loadMode: "essential" as const,
-  description: "Offer a brief celebration attached to a recent actual message only when a meaningful milestone is reached. Use sparingly, not for routine progress; reactions, kaomoji/captions, and explanatory visuals are optional contextual touches, not a checklist. The user controls whether effects display. Call list_reaction_targets first and use a returned id.",
+  description: "Offer a brief celebration attached to a recent actual message only when a meaningful milestone is reached. Use sparingly, not for routine progress; reactions and kaomoji/captions are optional contextual touches, not a checklist. The user controls whether effects display. Use list_reaction_targets when you need to find a target; when an interaction reminder supplies the current id, use it directly.",
   parameters: { type: "object", properties: { message_id: { type: "string" }, effect: { type: "string", enum: ["confetti", "sparkles"] } }, required: ["message_id", "effect"], additionalProperties: false },
 };
 export const THREAD_EXPRESSION_TOOLS = [REACT_TO_MESSAGE_TOOL, SET_EXPRESSION_TOOL, LIST_REACTION_TARGETS_TOOL, CELEBRATE_TOOL];
@@ -277,12 +316,13 @@ export async function handleThreadExpressionTool(
   }
   const messageId = typeof args.message_id === "string" ? args.message_id : "";
   const targets = await targetResolver();
+  const resolvedMessageId = resolveInteractionAlias(sessionId, messageId, targets);
   if (toolName === REACT_TO_MESSAGE_TOOL.name) {
     const emoji = typeof args.emoji === "string" ? args.emoji : "";
-    updateThreadExpression(sessionId, { action: "react", messageId, emoji, actor: "agent" }, targets);
+    updateThreadExpression(sessionId, { action: "react", messageId: resolvedMessageId, emoji, actor: "agent" }, targets);
     return { content: [{ type: "text", text: "Reaction updated." }] };
   }
   if (args.effect !== "confetti" && args.effect !== "sparkles") throw new Error("Celebration effect must be confetti or sparkles");
-  updateThreadExpression(sessionId, { action: "celebrate", messageId, effect: args.effect }, targets);
+  updateThreadExpression(sessionId, { action: "celebrate", messageId: resolvedMessageId, effect: args.effect }, targets);
   return { content: [{ type: "text", text: "Celebration sent." }] };
 }

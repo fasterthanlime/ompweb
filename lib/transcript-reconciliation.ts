@@ -1,12 +1,13 @@
+import { stripInteractionReminder } from "./interaction-reminder-text.ts";
 import type { AgentMessage, ImageContent, UserMessage } from "./types";
 
 function extractUserText(message: UserMessage): string {
-  if (typeof message.content === "string") return message.content;
-  return message.content
+  if (typeof message.content === "string") return stripInteractionReminder(message.content);
+  return stripInteractionReminder(message.content
     .filter((block) => block.type === "text")
     .map((block) => block.text)
     .filter(Boolean)
-    .join("\n");
+    .join("\n"));
 }
 
 function imageSignature(block: ImageContent): string {
@@ -22,7 +23,7 @@ function imageSignature(block: ImageContent): string {
 }
 
 export function userMessageKey(message: UserMessage): string {
-  if (typeof message.content === "string") return JSON.stringify({ text: message.content, images: [] });
+  if (typeof message.content === "string") return JSON.stringify({ text: extractUserText(message), images: [] });
   return JSON.stringify({
     text: extractUserText(message),
     images: message.content.filter((block) => block.type === "image").map(imageSignature),
