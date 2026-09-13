@@ -86,8 +86,8 @@ test("renders goal and planning indicators at the composer", () => {
     }),
   );
 
-  assert.match(html, /Ship the active goal bar/);
-  assert.match(html, /(Goal blocked|chatInput\.goalBlocked)/);
+  assert.doesNotMatch(html, /Ship the active goal bar/);
+  assert.doesNotMatch(html, /(Goal blocked|chatInput\.goalBlocked)/);
   assert.doesNotMatch(html, /(Goal active|chatInput\.goalActive)/);
   assert.match(html, /(Planning in progress|chatInput\.planningInProgress)/);
 });

@@ -10,6 +10,8 @@ import { ChatInput, type ChatInputHandle } from "./ChatInput";
 import { ExtensionDialog } from "./ExtensionDialog";
 import { SubagentTranscriptDialog } from "./SubagentTranscriptDialog";
 import { ChatMinimap, useMessageRefs } from "./ChatMinimap";
+import { ThreadWorkHistory } from "./ThreadWorkHistory";
+import { sendAgentCommand } from "@/lib/agent-client";
 import { ComposerPanels } from "./ComposerPanels";
 import { CHAT_COLUMN_MAX_WIDTH, CHAT_MINIMAP_WIDTH } from "@/lib/chat-layout";
 import { useAgentSession, type NoticeItem, type SubagentInfo } from "@/hooks/useAgentSession";
@@ -211,6 +213,17 @@ export function ChatWindow({ session, newSessionCwd, toolCallsDefaultCollapsed =
     registerAbortHandler(sessionBusy ? handleAbort : null);
     return () => registerAbortHandler(null);
   }, [sessionBusy, handleAbort]);
+
+  const appendTask = useCallback(async (content: string) => {
+    const id = session?.id ?? sessionIdRef.current;
+    if (!id) throw new Error("Create a thread before adding tasks");
+    await sendAgentCommand(id, { type: "append_user_task", content });
+  }, [session?.id, sessionIdRef]);
+  const changeGoal = useCallback(async (action: "resume" | "clear") => {
+    const id = session?.id ?? sessionIdRef.current;
+    if (!id) return;
+    await sendAgentCommand(id, { type: "set_goal", action });
+  }, [session?.id, sessionIdRef]);
 
   // Cycle model / thinking level via ⌘/Ctrl+Alt+M and ⌘/Ctrl+Alt+T (RPC
   // cycle_model / cycle_thinking_level). Meta/Alt combos avoid clashing with
@@ -603,6 +616,7 @@ export function ChatWindow({ session, newSessionCwd, toolCallsDefaultCollapsed =
         </div>
       )}
 
+      <ThreadWorkHistory goal={activeGoal} phases={todoPhases} subagents={subagents} onSelectSubagent={setSelectedSubagent} onAddTask={appendTask} onGoalAction={changeGoal} />
       <SubagentTranscriptDialog
         subagent={selectedSubagent}
         sessionId={session?.id ?? sessionIdRef.current ?? null}
@@ -806,6 +820,7 @@ export function ChatWindow({ session, newSessionCwd, toolCallsDefaultCollapsed =
               </div>
             )}
             <ComposerPanels
+              onAddTask={appendTask}
               todoPhases={todoPhases}
               subagents={subagents}
               onSelectSubagent={setSelectedSubagent}

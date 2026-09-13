@@ -220,7 +220,7 @@ export function parseSubagentSnapshot(value: unknown): SubagentInfo | undefined 
     agent,
     status,
     index: asNumber(value.index) ?? -1,
-    source: "live",
+    source: value.source === "history" ? "history" : "live",
   };
   const agentSource = asAgentSource(value.agentSource);
   if (agentSource !== undefined) info.agentSource = agentSource;

@@ -98,7 +98,7 @@ export const VISUAL_TOOL = {
     "Actions are create (default), update, remove, and list. Create requires title and html; update/remove require id; list takes no fields.",
     "No scripts, network, forms, navigation, animation, external assets, or Nook-control imitations. Keep the artifact concise and explanatory.",
     "Use classes and ordinary safe CSS only. For custom colors, use light-dark(light-color, dark-color), and always provide readable default classes, type, spacing, and surfaces.",
-    "The renderer sanitizes everything again; unsupported markup/styles are removed.",
+    "Semantic layout tags and inert mock buttons are supported. Safe width/color-scheme media queries, gradients, shadows, and overflow are supported; use class-based CSS, not inline styles. The renderer sanitizes everything again and warns when unsupported markup/styles are removed.",
   ].join(" "),
   parameters: {
     type: "object",

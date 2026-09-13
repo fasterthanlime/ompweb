@@ -1,3 +1,4 @@
+import { remoteSubagentHistory, remoteSubagentArtifact } from "./remote-subagent-history";
 import { readRemotePageRange, isPagingConflict, type RemotePageCursor } from "./remote-paging";
 import { randomUUID } from "crypto";
 import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "fs";
@@ -5,6 +6,7 @@ import { homedir } from "os";
 import { dirname } from "path";
 import { normalizeToolCalls } from "./normalize";
 import type { AgentMessage } from "./types";
+import { appendUserTask } from "./user-tasks";
 import { RpcCommandError, RpcProcess, type RpcFrame } from "./omp/rpc-process";
 import { getRemoteTargets, type RemoteTarget } from "./remote-targets";
 import { readRemoteControls, type RemoteControls } from "./remote-controls";
@@ -26,8 +28,7 @@ const SERVER_HOST_TOOLS = [...THREAD_EXPRESSION_TOOLS, VISUAL_TOOL, GOAL_TOOL, S
 const SERVER_HOST_TOOL_NAMES = new Set(SERVER_HOST_TOOLS.map((tool) => tool.name));
 const GOAL_TOOL_NAMES = new Set([GOAL_TOOL.name, SET_GOAL_TOOL.name, GET_GOAL_TOOL.name]);
 
-const REMOTE_SESSIONS_PATH = process.env.OMP_WEB_REMOTE_SESSIONS_PATH
-  ?? `${homedir()}/.omp/agent/remote-sessions.json`;
+const REMOTE_SESSIONS_PATH = process.env.OMP_WEB_REMOTE_SESSIONS_PATH ?? `${homedir()}/.omp/agent/remote-sessions.json`;
 const READY_TIMEOUT_MS = 120_000;
 const IDLE_CLOSE_MS = 10 * 60 * 1000;
 const MAX_ERROR_TAIL = 500;
@@ -693,10 +694,21 @@ export async function connectRemoteSession(id: string): Promise<RemoteSessionSna
 }
 export async function readRemoteSubagents(id: string, subagentId?: string, fromByte = 0): Promise<unknown> {
   await connect(id);
+  const descriptor = descriptorOrThrow(id);
+  const destination = findTarget(descriptor.targetId).destination;
   const proc = runtimeFor(id).proc!;
-  if (subagentId === undefined) return proc.sendCommand({ type: "get_subagents" });
+  if (subagentId === undefined) {
+    const live = await proc.sendCommand<{subagents: Array<{id:string}>}>({ type: "get_subagents" });
+    const history = await remoteSubagentHistory(destination, descriptor.sessionFile);
+    const merged = new Map(history.map(agent => [agent.id, { ...agent, source: "history" }]));
+    return { subagents: [...live.subagents, ...[...merged.values()].filter(agent => !live.subagents.some(current => current.id === agent.id))] };
+  }
   if (!/^[A-Za-z0-9_-]{1,80}$/.test(subagentId) || !Number.isSafeInteger(fromByte) || fromByte < 0) throw new RemoteSessionError("Invalid subagent page", "invalid_subagent_page", 400);
-  return proc.sendCommand({ type: "get_subagent_messages", subagentId, fromByte });
+  return remoteSubagentArtifact(destination, descriptor.sessionFile, subagentId, "transcript", fromByte);
+}
+export async function readRemoteSubagentCompletion(id: string, subagentId: string) {
+  const descriptor = descriptorOrThrow(id);
+  return remoteSubagentArtifact(findTarget(descriptor.targetId).destination, descriptor.sessionFile, subagentId, "completion");
 }
 export async function forkRemoteSession(id: string, entryId: string): Promise<RemoteSessionSnapshot> {
   if (!/^[A-Za-z0-9_-]{1,100}$/.test(entryId)) throw new RemoteSessionError("Invalid branch entry", "invalid_entry", 400);
@@ -953,4 +965,8 @@ export function restoreRemoteSession(id: string): RemoteSessionDescriptor {
   delete descriptor.archivedAt;
   persistState();
   return descriptor;
+}
+export async function appendRemoteUserTask(id: string, content: unknown) {
+  await connect(id);
+  return { todoPhases: await appendUserTask(runtimeFor(id).proc!, content) };
 }

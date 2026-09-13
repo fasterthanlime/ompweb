@@ -2065,6 +2065,9 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
 
   const handleAgentEvent = useCallback((event: AgentEvent) => {
     switch (event.type) {
+      case "todo_updated":
+        if (Array.isArray(event.todoPhases)) setTodoPhases(event.todoPhases as TodoPhase[]);
+        break;
       case "web_goal_updated":
         setActiveGoal(parseActiveGoal(event.goal));
         break;

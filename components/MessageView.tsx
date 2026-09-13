@@ -1,5 +1,6 @@
 "use client";
 
+import { SmoothSurface } from "./SmoothSurface";
 import { useMessageSelection } from "@/hooks/useMessageSelection";
 import { memo, useState, useRef, useEffect, useMemo, useCallback, type ComponentProps } from "react";
 import { Copy, Check, GitFork, CornerUpLeft, ChevronRight, ChevronDown, Brain, EyeOff, CircleAlert, LoaderCircle } from "lucide-react";
@@ -297,14 +298,14 @@ function UserMessageView({ message, showTimestamp = true, cwd, onOpenFile, entry
           )}
         {content && (
         <div
-          className="chat-message-card"
+          className="chat-message-card smooth-shell"
           style={{
             maxWidth: "100%",
             minWidth: 0,
-            background: "var(--user-bg)",
-            border: "1px solid var(--border)",
+            background: "transparent",
+            border: "1px solid transparent",
             borderRadius: "var(--radius-card)",
-            boxShadow: "var(--shadow-card)",
+            boxShadow: "none",
             padding: "10px 16px",
             fontSize: 16,
             lineHeight: 1.5,
@@ -314,6 +315,7 @@ function UserMessageView({ message, showTimestamp = true, cwd, onOpenFile, entry
             overflowY: "hidden",
           }}
         >
+          <SmoothSurface />
           <div ref={bubbleRef} style={{ maxHeight: overflows && !expanded ? 132 : undefined, overflow: "hidden", maskImage: overflows && !expanded ? "linear-gradient(black 75%, transparent)" : undefined }}>
             <SafeMarkdownBody className="markdown-user-message" cwd={cwd} onOpenFile={onOpenFile}>{content}</SafeMarkdownBody>
           </div>

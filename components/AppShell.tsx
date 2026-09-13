@@ -1147,6 +1147,7 @@ export function AppShell() {
                   </ToolbarMenu.Item>
                 </ToolbarMenu.Group>
                 <ToolbarMenu.Item className="shell-mobile-menu-item" onClick={() => setRightPanelOpen(value => !value)}>{rightPanelOpen ? t("appShell.hideFilePanel") : t("appShell.showFilePanel")}</ToolbarMenu.Item>
+                <ToolbarMenu.Item className="shell-mobile-menu-item" onClick={() => window.dispatchEvent(new Event("nook:work-history"))}>Tasks and history</ToolbarMenu.Item>
                 {remoteSelection && <>
                   <ToolbarMenu.GroupLabel className="shell-mobile-menu-label">Thread</ToolbarMenu.GroupLabel>
                   <ToolbarMenu.Item className="shell-mobile-menu-item" onClick={() => window.dispatchEvent(new Event("nook:thread-controls"))}>Thread controls</ToolbarMenu.Item>

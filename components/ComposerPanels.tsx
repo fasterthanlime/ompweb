@@ -11,6 +11,7 @@ import { useI18n } from "@/lib/i18n";
 import type { SubagentInfo } from "@/hooks/useAgentSession";
 import type { TodoPhase } from "@/lib/pi-types";
 import { countNestedSubagents, formatCost, formatDuration, formatTokens, shortModel } from "@/lib/subagent-format";
+import { AddTask } from "./AddTask";
 import { TodoList } from "./TodoList";
 import { SubagentStatusIcon } from "./SubagentStatusIcon";
 
@@ -358,7 +359,9 @@ export function SubagentsPanel({ subagents, onSelectSubagent, defaultHistoryOpen
  * dismissal handled by the primitive). Only real work pulses: with nothing
  * running, both segments settle to a quiet history/plan affordance instead
  * of a "0/N" gauge. */
-export function ComposerPanels({ todoPhases, subagents, onSelectSubagent, busy = false, defaultExpanded = false }: {
+export function ComposerPanels({ todoPhases, subagents, onSelectSubagent, busy = false, defaultExpanded = false, onAddTask, history = false }: {
+  onAddTask?: (content: string) => Promise<void>;
+  history?: boolean;
   todoPhases: TodoPhase[];
   subagents: SubagentInfo[];
   onSelectSubagent: (subagent: SubagentInfo) => void;
@@ -375,10 +378,10 @@ export function ComposerPanels({ todoPhases, subagents, onSelectSubagent, busy =
   // Count tasks, not phases: a phase with zero tasks must not mint a phantom
   // "0/0" trigger.
   const todoTasks = todoPhases.flatMap((phase) => phase.tasks);
-  const hasTodo = todoTasks.length > 0;
+  const hasTodo = todoTasks.length > 0 || Boolean(onAddTask);
   const roster = useMemo(() => dedupeSubagents(subagents), [subagents]);
   const hasAgents = roster.length > 0;
-  if (!hasTodo && !hasAgents && !busy) return null;
+  if ((!hasTodo && !hasAgents && !busy) || (!history && !busy && !roster.some(isRunningSubagent))) return null;
 
   // The todo plan is durable per session: omp persists the latest todo tool
   // snapshot in the session file, so it legitimately outlives the turn that
@@ -444,6 +447,7 @@ export function ComposerPanels({ todoPhases, subagents, onSelectSubagent, busy =
                   <Popover.Title className="composer-panel-popup-title">{t("chatWindow.todoList")}</Popover.Title>
                   <div className="composer-panel-scroll">
                     <TodoList phases={todoPhases} headerless open />
+                    {onAddTask && <AddTask onAdd={onAddTask} />}
                   </div>
                 </Popover.Popup>
               </Popover.Positioner>

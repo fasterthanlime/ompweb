@@ -80,18 +80,18 @@ function resultStatus(value: Record<string, unknown>): SubagentHistoryEntry["sta
 }
 
 /**
- * Recover the subagent roster from a parent session file. Walks task
- * toolResults, merging `progress` (live-snapshot fields) with `results`
- * (settled per-subagent telemetry), then resolves sibling transcript files.
+ * Parse task toolResult snapshots into the shared subagent history roster.
+ *
+ * Keeping the entry walk separate from filesystem access lets the remote
+ * session bridge apply the same progress/result precedence to a bounded
+ * parent-file window fetched over SSH. `resolveTranscript` is deliberately
+ * supplied by the caller so remote paths never enter the local filesystem
+ * resolver.
  */
-export function extractSubagentHistory(sessionFilePath: string): SubagentHistoryEntry[] {
-  let entries: SessionEntry[];
-  try {
-    entries = getSessionEntries(sessionFilePath);
-  } catch {
-    return [];
-  }
-
+export function extractSubagentHistoryFromEntries(
+  entries: SessionEntry[],
+  options: { resolveTranscript?: (subagentId: string) => string | undefined } = {},
+): SubagentHistoryEntry[] {
   const byId = new Map<string, SubagentHistoryEntry>();
   const upsert = (entry: SubagentHistoryEntry) => {
     const existing = byId.get(entry.id);
@@ -216,7 +216,6 @@ export function extractSubagentHistory(sessionFilePath: string): SubagentHistory
   }
 
   // Resolve sibling transcript files and async/detached markers.
-  const dir = siblingDirForSession(sessionFilePath);
   const detachedIds = new Set<string>();
   for (const entry of entries) {
     if (entry.type !== "message" || entry.message?.role !== "toolResult") continue;
@@ -230,14 +229,30 @@ export function extractSubagentHistory(sessionFilePath: string): SubagentHistory
   const roster = [...byId.values()];
   for (const entry of roster) {
     if (detachedIds.has(entry.id)) entry.detached = true;
-    const candidate = join(dir, `${entry.id}.jsonl`);
-    const available = existsSync(candidate);
-    if (available) {
-      entry.sessionFile = candidate;
+    const transcript = options.resolveTranscript?.(entry.id);
+    if (transcript) {
+      entry.sessionFile = transcript;
       entry.transcriptAvailable = true;
     }
   }
   return roster.sort((a, b) => a.index - b.index || a.id.localeCompare(b.id));
+}
+
+/** Recover a local roster from a parent session file. */
+export function extractSubagentHistory(sessionFilePath: string): SubagentHistoryEntry[] {
+  let entries: SessionEntry[];
+  try {
+    entries = getSessionEntries(sessionFilePath);
+  } catch {
+    return [];
+  }
+  const dir = siblingDirForSession(sessionFilePath);
+  return extractSubagentHistoryFromEntries(entries, {
+    resolveTranscript: (subagentId) => {
+      const candidate = join(dir, `${subagentId}.jsonl`);
+      return existsSync(candidate) ? candidate : undefined;
+    },
+  });
 }
 
 /** Cap on transcript bytes materialized for the dialog (files are small). */

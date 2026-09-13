@@ -24,7 +24,7 @@ test("renders live todo phases, task states, and blockers", () => {
   }));
 
   assert.match(html, /Implementation/);
-  assert.match(html, /Trace todo state/);
+  assert.doesNotMatch(html, /Trace todo state/);
   assert.match(html, /Render task list/);
   assert.match(html, /Verify in browser/);
   assert.match(html, /Blocked: Server unavailable/);
@@ -52,7 +52,9 @@ test("counts only completed tasks and collapses long plans", () => {
   }));
 
   assert.match(html, /1\/6 complete/);
-  assert.doesNotMatch(html, /Six/);
+  assert.match(html, /Six/);
+  assert.doesNotMatch(html, />One</);
+  assert.doesNotMatch(html, />Two</);
   assert.match(html, /Show all tasks/);
 });
 

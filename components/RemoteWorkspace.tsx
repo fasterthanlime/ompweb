@@ -13,6 +13,7 @@ import { parseActiveGoal } from "@/lib/web-mode-state";
 import { useAudio } from "@/hooks/useAudio";
 import { CommittedTranscript } from "./CommittedTranscript";
 import { Dialog, DialogContent, DialogTitle, DialogClose } from "./ui/primitives";
+import { ThreadWorkHistory } from "./ThreadWorkHistory";
 import { ComposerPanels } from "./ComposerPanels";
 import { SubagentTranscriptDialog } from "./SubagentTranscriptDialog";
 import { parseSubagentSnapshot, type SubagentInfo } from "@/lib/subagent-types";
@@ -49,6 +50,7 @@ type RemotePage = {
 
 type ApiPayload = {
   success?: boolean;
+  todoPhases?: RemoteControls["todoPhases"];
   data?: unknown;
   error?: string;
   code?: string;
@@ -308,7 +310,7 @@ export function RemoteChat({ sessionId, targetId, onSessionCreated, onControlsCh
     node.scrollTop = restore.top + (node.scrollHeight - restore.height);
   }, [detail?.messages]);
 
-  const updateControl = useCallback(async (command: Record<string, string>) => {
+  const updateControl = useCallback(async (command: Record<string, string>, propagateError = false) => {
     if (!activeSessionId) return;
     if (command.type === "compact") setControls(current => current ? { ...current, isCompacting: true } : current);
     try {
@@ -319,6 +321,7 @@ export function RemoteChat({ sessionId, targetId, onSessionCreated, onControlsCh
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Remote setting failed");
       if (command.type === "compact") setControls(current => current ? { ...current, isCompacting: false } : current);
+      if (propagateError) throw cause;
     }
   }, [activeSessionId]);
 
@@ -676,6 +679,12 @@ export function RemoteChat({ sessionId, targetId, onSessionCreated, onControlsCh
   }, [command]);
 
 
+  const appendTask = async (content: string) => {
+    if (!activeSessionId) throw new Error("Create a thread before adding tasks");
+    const response = await fetch(`/api/remote/${encodeURIComponent(activeSessionId)}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ type: "append_user_task", content }) });
+    const result = await readApi(response);
+    setControls(current => current ? { ...current, todoPhases: result.todoPhases as RemoteControls["todoPhases"] } : current);
+  };
   const connected = detail?.session.connected === true;
   const [threadControlsOpen, setThreadControlsOpen] = useState(false);
   useEffect(() => {
@@ -713,7 +722,8 @@ export function RemoteChat({ sessionId, targetId, onSessionCreated, onControlsCh
         </div>
       </div>
 
-      <div style={{ width: "100%", maxWidth: CHAT_COLUMN_MAX_WIDTH, margin: "0 auto", padding: "0 16px" }}><ComposerPanels todoPhases={controls?.todoPhases ?? []} subagents={subagents} onSelectSubagent={setSelectedSubagent} busy={isStreaming || controls?.isCompacting} /></div>
+      <div style={{ width: "100%", maxWidth: CHAT_COLUMN_MAX_WIDTH, margin: "0 auto", padding: "0 16px" }}><ComposerPanels onAddTask={appendTask} todoPhases={controls?.todoPhases ?? []} subagents={subagents} onSelectSubagent={setSelectedSubagent} busy={isStreaming || controls?.isCompacting} /></div>
+      <ThreadWorkHistory goal={controls?.goal} phases={controls?.todoPhases ?? []} subagents={subagents} onSelectSubagent={setSelectedSubagent} onAddTask={appendTask} onGoalAction={action => updateControl({ type: "set_goal", action }, true)} />
       <SubagentTranscriptDialog remote subagent={selectedSubagent} sessionId={activeSessionId} transcriptVersion={0} onClose={() => setSelectedSubagent(null)} />
       <div style={{ ...styles.composer, width: "100%", maxWidth: CHAT_COLUMN_MAX_WIDTH, margin: "0 auto" }}><ChatInput ref={composerRef} onSend={send} onAbort={abort} onInterruptAndReply={interruptAndReply} isStreaming={isStreaming} draftKey={composerDraftKey} model={controls?.model} modelList={controls?.models} modelNameOverride={controls?.model?.name} onModelChange={(provider, modelId) => void updateControl({ type: "set_model", provider, modelId })} thinkingLevel={controls?.thinkingLevel} onThinkingLevelChange={level => void updateControl({ type: "set_thinking_level", level })} contextUsage={controls?.contextUsage} isCompacting={controls?.isCompacting} onCompact={activeSessionId ? () => void updateControl({ type: "compact" }) : undefined} onAbortCompaction={() => void updateControl({ type: "abort_compaction" })} activeGoal={controls?.goal} onAudioUnlock={unlockAudio} /></div>
     </section>

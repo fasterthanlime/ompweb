@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { parseJsonWithinLimit, RequestBodyTooLargeError } from "@/lib/bounded-form-data";
 import {
+  appendRemoteUserTask,
+  readRemoteSubagentCompletion,
   archiveRemoteSession,
   abortRemoteSession,
   connectRemoteSession,
@@ -58,6 +60,8 @@ export async function POST(
     }
     const record = body && typeof body === "object" && !Array.isArray(body) ? body as Record<string, unknown> : {};
     const type = record.type;
+    if (type === "append_user_task" && typeof record.content === "string") return NextResponse.json(await appendRemoteUserTask(id, record.content));
+    if (type === "get_subagent_completion" && typeof record.subagentId === "string") return NextResponse.json(await readRemoteSubagentCompletion(id, record.subagentId));
     if (type === "archive") { await archiveRemoteSession(id); return NextResponse.json({ success: true }); }
     if (type === "connect") return NextResponse.json(await connectRemoteSession(id));
     if (type === "abort") return NextResponse.json({ success: true, data: await abortRemoteSession(id) });

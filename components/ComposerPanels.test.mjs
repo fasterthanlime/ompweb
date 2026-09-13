@@ -156,58 +156,14 @@ test("retrying chips surface retry state instead of the activity line", () => {
   assert.doesNotMatch(html, />retrying 2\/5</);
 });
 
-test("coexists with composer layout and keeps todo plan status accessible", () => {
-  const html = renderToStaticMarkup(React.createElement(ComposerPanels, {
-    todoPhases: [{ name: "Implementation", tasks: [{ content: "Checklist item 1", status: "pending" }, { content: "Checklist item 2", status: "completed" }] }],
-    subagents: [],
-    onSelectSubagent: noop,
-  }));
-  assert.match(html, /Tasks/);
-  assert.match(html, /1 task remaining/);
-});
-
-test("idle plan renders a quiet remaining count, never a live 0/N gauge", () => {
-  const html = renderToStaticMarkup(React.createElement(ComposerPanels, {
-    todoPhases: [{ name: "Implementation", tasks: [
-      { content: "Task A", status: "pending" },
-      { content: "Task B", status: "pending" },
-      { content: "Task C", status: "pending" },
-      { content: "Task D", status: "pending" },
-    ] }],
-    subagents: [],
-    onSelectSubagent: noop,
-  }));
-  // The persisted 4-task plan reads as a static plan status ("4 tasks
-  // remaining"), not as pending work being executed ("Tasks 0/4").
-  assert.match(html, />4 tasks remaining</);
-  assert.doesNotMatch(html, />0\/4</);
-  assert.doesNotMatch(html, />Task A</);
-  assert.doesNotMatch(html, /0\/4 complete/);
-});
-
-test("idle plan never re-presents an interrupted in-progress task as live", () => {
-  const html = renderToStaticMarkup(React.createElement(ComposerPanels, {
-    todoPhases: [{ name: "Implementation", tasks: [{ content: "Wire panels", status: "in_progress" }] }],
-    subagents: [],
-    onSelectSubagent: noop,
-  }));
-  // Turn ended mid-task: the in-progress marker is stale, so the trigger
-  // must not lead with the task text as if it were still executing.
-  assert.doesNotMatch(html, />Wire panels</);
-  assert.match(html, />1 task remaining</);
-});
-
-test("completed idle plan shows a quiet complete state", () => {
-  const html = renderToStaticMarkup(React.createElement(ComposerPanels, {
-    todoPhases: [{ name: "Implementation", tasks: [
-      { content: "Done A", status: "completed" },
-      { content: "Done B", status: "abandoned" },
-    ] }],
-    subagents: [],
-    onSelectSubagent: noop,
-  }));
-  assert.match(html, />complete</);
-  assert.doesNotMatch(html, />0\/2</);
+test("dormant plans do not occupy the composer", () => {
+  for (const status of ["pending", "completed", "in_progress", "abandoned"]) {
+    const html = renderToStaticMarkup(React.createElement(ComposerPanels, {
+      todoPhases: [{ name: "Previous work", tasks: [{ content: "Old task", status }] }],
+      subagents: [], onSelectSubagent: noop,
+    }));
+    assert.equal(html, "");
+  }
 });
 
 test("history chips render terminal telemetry without pulsing state", () => {

@@ -210,7 +210,11 @@ export function SubagentTranscriptDialog({ subagent, sessionId, transcriptVersio
 
   const fetchCompletion = useCallback(async (): Promise<{ completion: string | null; truncated: boolean }> => {
     if (!sessionId || !subagent?.id) throw new Error("No session");
-    if (remote) return { completion: null, truncated: false };
+    if (remote) {
+      const response = await fetch(`/api/remote/${encodeURIComponent(sessionId)}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ type: "get_subagent_completion", subagentId: subagent.id }) });
+      if (!response.ok) throw new Error("Remote completion unavailable");
+      return response.json();
+    }
     const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/subagents/${encodeURIComponent(subagent.id)}?mode=completion`);
     if (res.status === 404) return { completion: null, truncated: false };
     if (!res.ok) throw new Error(`HTTP ${res.status}`);

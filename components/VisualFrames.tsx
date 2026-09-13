@@ -75,16 +75,17 @@ function useVisualTheme(): "light" | "dark" {
   );
 }
 
-function Frame({ frame, theme }: { frame: VisualFrame; theme: "light" | "dark" }) {
+function VisualContent({ frame, theme }: { frame: VisualFrame; theme: "light" | "dark" }) {
   const host = useRef<HTMLDivElement>(null);
   const [error, setError] = useState("");
-  const [expanded, setExpanded] = useState(false);
+  const [warnings, setWarnings] = useState<string[]>([]);
 
   useEffect(() => {
     if (!host.current) return;
     const shadow = host.current.shadowRoot ?? host.current.attachShadow({ mode: "open" });
     try {
       const safe = sanitizeVisual(frame.html, frame.css);
+      setWarnings(safe.warnings);
       const style = document.createElement("style");
       style.textContent = [
         `:host{all:initial;display:block;color-scheme:${theme};color:light-dark(#272726,#ebe6dc);background:light-dark(#fafaf8,#1b1916);font:14px system-ui,sans-serif;line-height:1.5}`,
@@ -98,24 +99,39 @@ function Frame({ frame, theme }: { frame: VisualFrame; theme: "light" | "dark" }
       setError("");
     } catch {
       shadow.replaceChildren();
+      setWarnings([]);
       setError("This visual exceeds the supported static format.");
     }
     return () => shadow.replaceChildren();
   }, [frame, theme]);
 
   return (
-    <section data-visual-id={frame.id} style={{ border: "1px solid var(--border)", borderRadius: "var(--radius-card)", margin: "12px 0", overflow: "hidden", background: "var(--bg-panel)" }}>
-      <header style={{ display: "flex", gap: 8, padding: 10, alignItems: "center" }}>
-        <strong style={{ flex: 1, fontSize: 13 }}>{frame.title}</strong>
-        <span style={{ fontSize: 10, color: "var(--text-dim)" }}>Agent visual</span>
-        <span style={{ fontSize: 10, color: "var(--text-dim)" }}>v{frame.revision}</span>
-        <button type="button" onClick={() => setExpanded((value) => !value)}>{expanded ? "Collapse" : "Expand"}</button>
-        <button type="button" onClick={() => void navigator.clipboard.writeText(`${frame.html}\n<style>\n${frame.css}\n</style>`)}>Copy source</button>
-      </header>
+    <>
       {error ? <p role="status" style={{ padding: "0 12px", color: "var(--status-error)" }}>{error}</p> : null}
-      <div ref={host} style={{ contain: "layout paint style", isolation: "isolate", maxHeight: expanded ? "70vh" : 360, overflow: "auto", padding: 12 }} />
-    </section>
+      {warnings.map(warning => <p key={warning} role="status" style={{ padding: "0 12px", color: "var(--text-muted)", fontSize: 12 }}>{warning}</p>)}
+      <div ref={host} style={{ width: "100%", minWidth: 0, contain: "layout paint style", isolation: "isolate", overflow: "auto" }} />
+    </>
   );
+}
+
+function Frame({ frame, theme }: { frame: VisualFrame; theme: "light" | "dark" }) {
+  const [fullscreen, setFullscreen] = useState(false);
+  const trigger = useRef<HTMLButtonElement>(null);
+  return <section data-visual-id={frame.id} style={{ width: "100%", minWidth: 0, margin: "12px 0" }}>
+    <div style={{ display: "flex", justifyContent: "flex-end" }}>
+      <button ref={trigger} type="button" className="ui-focus-ring" style={{ minHeight: 44, padding: "0 8px", fontSize: 12, color: "var(--text-muted)" }} onClick={() => setFullscreen(true)} aria-label={`Full screen: ${frame.title}`}>Full screen</button>
+    </div>
+    <VisualContent frame={frame} theme={theme} />
+    <Dialog open={fullscreen} onOpenChange={open => { setFullscreen(open); if (!open) trigger.current?.focus({ preventScroll: true }); }}>
+      <DialogContent style={{ inset: 0, top: 0, left: 0, transform: "none", animation: "none", width: "100%", height: "100dvh", maxWidth: "none", maxHeight: "none", border: 0, borderRadius: 0, padding: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+        <header style={{ display: "flex", alignItems: "center", gap: 12, flexShrink: 0, padding: "env(safe-area-inset-top) max(12px, env(safe-area-inset-right)) 0 max(12px, env(safe-area-inset-left))" }}>
+          <DialogTitle style={{ flex: 1, minWidth: 0, margin: 0, fontSize: 14, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{frame.title}</DialogTitle>
+          <DialogClose className="ui-focus-ring" style={{ minWidth: 44, minHeight: 44 }}>Close</DialogClose>
+        </header>
+        <div style={{ flex: 1, minHeight: 0, overflow: "auto", paddingBottom: "env(safe-area-inset-bottom)" }}><VisualContent frame={frame} theme={theme} /></div>
+      </DialogContent>
+    </Dialog>
+  </section>;
 }
 
 function frameMatchesAnchor(frame: VisualFrame, anchorIds: Set<string>): boolean {

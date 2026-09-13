@@ -1,3 +1,4 @@
+import { appendUserTask } from "./user-tasks";
 import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { randomUUID } from "crypto";
@@ -1095,6 +1096,11 @@ export class AgentSessionWrapper {
     if (unsupported) throw new RpcCommandError(type, unsupported, "unsupported");
 
     switch (type) {
+      case "append_user_task": {
+        const todoPhases = await appendUserTask(this.proc, command.content);
+        this.emit({ type: "todo_updated", todoPhases });
+        return { todoPhases };
+      }
       case "get_goal":
         return this.goal;
       case "set_goal": {
@@ -1463,6 +1469,11 @@ export async function restoreActiveRpcSessions(): Promise<number> {
   const restored = await Promise.allSettled(
     sessions.map(async (saved) => {
       if (!existsSync(saved.sessionFile)) throw new Error(`session file missing: ${saved.sessionFile}`);
+      // Capture the persisted goal before startRpcSession initializes the child:
+      // initialize() deliberately pauses active goals so autonomous work never
+      // resumes implicitly. The pre-start status distinguishes that case from
+      // an ordinary interrupted turn with paused/terminal metadata.
+      const goal = getSessionGoal(saved.sessionId);
       const header = readSessionHeader(saved.sessionFile);
       const { cwd } = resolveSpawnCwdResult(header?.cwd ?? saved.cwd);
       const { session } = await startRpcSession(
@@ -1473,7 +1484,11 @@ export async function restoreActiveRpcSessions(): Promise<number> {
         saved.advisor,
         header?.cwd,
       );
-      if (saved.turnActive && !getSessionGoal(saved.sessionId)) {
+      // Restore only an interrupted ordinary turn. A persisted active goal is
+      // autonomous work and remains pause-protected; paused and terminal goal
+      // records are stale metadata for this purpose and must not block the
+      // user's interrupted turn recovery. `turnActive` excludes idle/Stop.
+      if (saved.turnActive && goal?.status !== "active") {
         await session.send({ type: "prompt", message: INTERRUPTED_TURN_RECOVERY_PROMPT });
       }
     }),

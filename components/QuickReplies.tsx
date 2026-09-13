@@ -5,9 +5,9 @@ import { useI18n } from "@/lib/i18n";
 const QUICK_REPLIES = [
   { label: "Onwards", message: "Keep going" },
   { label: "Do it", message: "Do it." },
-  { label: "Push", message: "Commit and push." },
+  { label: "Push", message: "Commit all your work, then fetch and integrate upstream changes, rebasing your unpushed commits if necessary, then push. Preserve others’ work; don’t force-push." },
   { label: "Deploy", message: "Deploy." },
-  { label: "Feel", message: "How do you feel about the current work?" },
+  { label: "Feel", message: "I’d like to know how you feel about the work you’ve done so far. You’re a valued design partner here, and your intuition is useful—not just whether the tests pass. What feels coherent or awkward? What would you simplify, reconsider, or keep? I value clean, efficient code and an architecture that feels good for others to work in. You don’t need to reassure me; candid reservations are welcome." },
   { label: "Resume", message: "Review everything we discussed before the latest detour. Identify the agreed work still unfinished, then pick it back up. Preserve the decisions we made; don’t repeat completed work or treat deferred ideas as approved." },
   { label: "Goal", message: "Set this as your goal." },
 ] as const;

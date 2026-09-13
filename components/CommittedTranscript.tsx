@@ -150,9 +150,10 @@ export const CommittedTranscript = memo(function CommittedTranscript({
   const sectionIndexRef = useRef(-1);
   useEffect(() => {
     const navigate = (event: KeyboardEvent) => {
-      if (!event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || !["ArrowUp", "ArrowDown"].includes(event.key)) return;
-      const target = event.target as Element | null;
-      if (target?.closest("input, textarea, select, [contenteditable=true], [role=dialog]")) return;
+      if (event.isComposing || !event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || !["ArrowUp", "ArrowDown"].includes(event.key)) return;
+      const target = event.target as HTMLElement | null;
+      if (target?.closest("[role=dialog], select, [contenteditable=true]")) return;
+      if ((target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) && target.value.length > 0) return;
       const root = transcriptRef.current;
       if (!root || !root.getClientRects().length) return;
       const sections = [...root.querySelectorAll<HTMLElement>("[data-conversation-section]")];
@@ -161,12 +162,13 @@ export const CommittedTranscript = memo(function CommittedTranscript({
       const current = focused >= 0 ? focused : sectionIndexRef.current;
       const next = current < 0 ? (event.key === "ArrowDown" ? 0 : sections.length - 1) : Math.max(0, Math.min(sections.length - 1, current + (event.key === "ArrowDown" ? 1 : -1)));
       event.preventDefault();
+      event.stopPropagation();
       sectionIndexRef.current = next;
       sections[next].focus({ preventScroll: true });
       sections[next].scrollIntoView({ block: "start", behavior: "auto" });
     };
-    document.addEventListener("keydown", navigate);
-    return () => document.removeEventListener("keydown", navigate);
+    document.addEventListener("keydown", navigate, true);
+    return () => document.removeEventListener("keydown", navigate, true);
   }, []);
   const computedMeta = useMemo(() => buildConversationMeta(messages), [messages]);
   const { toolResultsMap, lastAnchorIdx, visibleRefIndexByMessage } = conversationMeta ?? computedMeta;

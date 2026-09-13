@@ -1,6 +1,7 @@
 "use client";
 
 import type { DictationSpan } from "@/lib/dictation-display";
+import { SmoothSurface } from "./SmoothSurface";
 import { QuickReplies } from "./QuickReplies";
 import React, { useRef, useState, useCallback, useEffect, useImperativeHandle, forwardRef, memo, KeyboardEvent } from "react";
 import { ChevronDown, ListChecks, Search, Target } from "lucide-react";
@@ -472,7 +473,6 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
   const acceptPreview = useCallback((text: string, spans?: DictationSpan[]) => { setDictationPreview(text); setPreviewSpans(spans); }, []);
   const [dictationPreview, setDictationPreview] = useState("");
   const [dictationActive, setDictationActive] = useState(false);
-  const [typingFocused, setTypingFocused] = useState(false);
   const editorValue = value + (dictationPreview ? (value && !/\s$/.test(value) ? " " : "") + dictationPreview : "");
   const [dictationSubmit, setDictationSubmit] = useState(false);
   const trimmedValue = value.trimStart();
@@ -1546,7 +1546,7 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
       />
       <div style={{ maxWidth: CHAT_COLUMN_MAX_WIDTH, margin: "0 auto" }}>
         <ModelErrorBanner error={modelError} />
-        <ComposerModeStatus goal={activeGoal} plan={activePlan} />
+        <ComposerModeStatus goal={activeGoal?.status === "active" ? activeGoal : null} plan={activePlan} />
         {/* Retry banner */}
         {retryInfo && (
           <div style={{
@@ -2122,18 +2122,19 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
           </div>
         )}
           <div
-            className="chat-input-shell"
+            className="chat-input-shell smooth-shell"
             style={{
               display: "flex",
               flexDirection: "column",
-              background: "var(--bg)",
-              border: `1px solid ${bashMode ? "var(--tool-bg)" : "color-mix(in srgb, var(--border) 70%, transparent)"}`,
+              background: "transparent",
+              border: "1px solid transparent",
               borderRadius: "var(--radius-card)",
               padding: "14px 16px 12px 16px",
-              boxShadow: "var(--shadow-card)",
+              position: "relative",
               transition: "border-color var(--dur-fast) var(--ease-out-warm), background var(--dur-fast) var(--ease-out-warm), box-shadow var(--dur-fast) var(--ease-out-warm)",
             } as React.CSSProperties}
           >
+        <SmoothSurface radius={48} fill="var(--bg)" />
         {attachedImages.length > 0 && (
           <div style={{ display: "flex", gap: 6, marginBottom: 6, flexWrap: "wrap" }}>
             {attachedImages.map((img, i) => (
@@ -2228,8 +2229,6 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
           <textarea
             ref={textareaRef}
             autoComplete="off"
-            onFocus={() => setTypingFocused(true)}
-            onBlur={() => setTypingFocused(false)}
             value={editorValue}
             readOnly={dictationActive}
             onScroll={event => { if (previewOverlayRef.current) previewOverlayRef.current.scrollTop = event.currentTarget.scrollTop; }}
@@ -2273,7 +2272,7 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
             }}
           />
           {dictationPreview && previewSpans && <div ref={previewOverlayRef} aria-hidden="true" style={{ position: "absolute", inset: 0, pointerEvents: "none", overflow: "hidden", whiteSpace: "pre-wrap", overflowWrap: "break-word", fontFamily: "inherit", fontSize: 16, lineHeight: 1.5, color: "var(--text)" }}>{value}{value && !/\s$/.test(value) ? " " : ""}{previewSpans.map((span,index)=><span key={index} style={{color:span.kind === "punctuation" && !span.stable ? "var(--text-dim)" : "var(--text)"}}>{span.text}</span>)}</div>}
-          <div className="composer-reply-line" style={{ visibility: !value && !attachedImages.length && !attachedTextFiles.length && !dictationActive && !submitting && !typingFocused ? "visible" : "hidden" }} inert={Boolean(value || attachedImages.length || attachedTextFiles.length || dictationActive || submitting || typingFocused)}>
+          <div className="composer-reply-line" style={{ visibility: !value && !attachedImages.length && !attachedTextFiles.length && !dictationActive && !submitting ? "visible" : "hidden" }} inert={Boolean(value || attachedImages.length || attachedTextFiles.length || dictationActive || submitting)}>
             <QuickReplies onReply={message => isStreaming && onInterruptAndReply ? onInterruptAndReply(message) : onSend(message)} />
           </div>
           </div>

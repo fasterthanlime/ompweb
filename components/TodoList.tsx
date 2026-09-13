@@ -38,7 +38,10 @@ export function TodoList({ phases = [], collapsible = false, defaultExpanded = f
   const tasks = phases.flatMap((phase) => phase.tasks);
   const done = tasks.filter((task) => task.status === "completed").length;
   let remainingPreviewTasks = 5;
-  const displayedPhases = (expanded ? phases : phases.slice(0, 4)).map((phase) => {
+  const unfinished = phases.map(phase => ({ ...phase, tasks: phase.tasks.filter(task => task.status !== "completed" && task.status !== "abandoned") })).filter(phase => phase.tasks.length > 0);
+  const finished = phases.map(phase => ({ ...phase, tasks: phase.tasks.filter(task => task.status === "completed" || task.status === "abandoned") })).filter(phase => phase.tasks.length > 0);
+  const ordered = [...unfinished, ...(expanded || unfinished.length === 0 ? finished : [])];
+  const displayedPhases = ordered.map((phase) => {
     const displayedTasks = expanded ? phase.tasks : phase.tasks.slice(0, remainingPreviewTasks);
     remainingPreviewTasks -= displayedTasks.length;
     return { ...phase, tasks: displayedTasks };
