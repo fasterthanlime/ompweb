@@ -2273,7 +2273,13 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
           />
           {dictationPreview && previewSpans && <div ref={previewOverlayRef} aria-hidden="true" style={{ position: "absolute", inset: 0, pointerEvents: "none", overflow: "hidden", whiteSpace: "pre-wrap", overflowWrap: "break-word", fontFamily: "inherit", fontSize: 16, lineHeight: 1.5, color: "var(--text)" }}>{value}{value && !/\s$/.test(value) ? " " : ""}{previewSpans.map((span,index)=><span key={index} style={{color:span.kind === "punctuation" && !span.stable ? "var(--text-dim)" : "var(--text)"}}>{span.text}</span>)}</div>}
           <div className="composer-reply-line" style={{ visibility: !value && !attachedImages.length && !attachedTextFiles.length && !dictationActive && !submitting ? "visible" : "hidden" }} inert={Boolean(value || attachedImages.length || attachedTextFiles.length || dictationActive || submitting)}>
-            <QuickReplies onReply={message => isStreaming && onInterruptAndReply ? onInterruptAndReply(message) : onSend(message)} />
+            <QuickReplies onReply={message => {
+              if (textareaRef.current?.value) return;
+              setValue(message);
+              setAtQuery(null);
+              textareaRef.current?.focus();
+              requestAnimationFrame(() => textareaRef.current?.setSelectionRange(message.length, message.length));
+            }} />
           </div>
           </div>
           {/* Toolbar: + attachment (labelled menu) · context ring · model · reasoning · dictation · send/stop */}

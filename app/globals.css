@@ -2783,11 +2783,15 @@ html.dark .dropdown-surface :is(select, option) {
 .chat-input-shell .composer-type-prompt { font: 16px/1.5 var(--font-conversation); }
 
 .composer-writing-area { position: relative; display: grid; min-width: 0; }
-.composer-writing-area > textarea { grid-area: 1 / 1; align-self: stretch; }
-.composer-reply-line { grid-area: 1 / 1; align-self: end; padding-top: 24px; pointer-events: none; z-index: 1; }
-.chat-input-shell .composer-reply-line .composer-quick-replies { position: static; width: 100%; max-width: 100%; margin: 0; flex-wrap: wrap; gap: 4px; pointer-events: none; }
-.chat-input-shell .composer-reply-line .composer-quick-replies button { pointer-events: auto; font-size: 13px; min-height: 24px; }
-.composer-reply-line[inert] .composer-quick-replies button { pointer-events: none; }
+.composer-writing-area > textarea { min-height: 48px; }
+.composer-reply-line { margin-top: 12px; min-width: 0; }
+.composer-reply-navigation { display: flex; align-items: center; gap: 8px; height: 44px; min-width: 0; }
+.reply-category { display: inline-flex; align-items: center; justify-content: center; width: 44px; height: 44px; flex: 0 0 44px; border-radius: var(--radius-control); color: var(--text-muted); }
+.reply-options-popover { display: flex; flex-direction: column; min-width: 180px; max-width: calc(100vw - 16px); max-height: var(--available-height); overflow-y: auto; padding: 8px; }
+.reply-option { min-height: 44px; flex: 0 0 auto; padding: 0 12px; font-size: 13px; text-align: left; white-space: nowrap; border-radius: var(--radius-control); color: var(--text); }
+.reply-category:hover, .reply-option:hover { background: var(--bg-hover); }
+.reply-category:active, .reply-option:active { background: var(--bg-selected); }
+.composer-reply-line[inert] { display: none; }
 
 .smooth-shell { isolation: isolate; }
 .smooth-surface { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: -1; overflow: visible; }

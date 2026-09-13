@@ -1,5 +1,6 @@
 "use client";
 import { stripInteractionReminder } from "@/lib/interaction-reminder-text";
+import { isReactionNotification } from "@/lib/reaction-notification";
 
 import { SmoothSurface } from "./SmoothSurface";
 import { useMessageSelection } from "@/hooks/useMessageSelection";
@@ -161,6 +162,7 @@ function haveSameRelevantToolResults(
   return true;
 }
 export const MessageView = memo(function MessageView({ message, isStreaming, toolResults, modelNames, cwd, onOpenFile, entryId, messageIndex = 0, onFork, forking, onNavigate, prevAssistantEntryId, onEditContent, showTimestamp, prevTimestamp, sessionId, threadExpressionId, reactionTargetId, toolCallsDefaultCollapsed = true, liveTokensPerSecond }: Props) {
+  if (isReactionNotification(message)) return null;
   const threadId = threadExpressionId ?? sessionId;
   const messageId = reactionTargetId ?? getReactionTargetId(message.role, "timestamp" in message ? message.timestamp : undefined, messageIndex, entryId);
   if (message.role === "user") {

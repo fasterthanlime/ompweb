@@ -1,6 +1,7 @@
 "use client";
 
 import { stripInteractionReminder } from "@/lib/interaction-reminder-text";
+import { isReactionNotification } from "@/lib/reaction-notification";
 import { memo, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import { ChevronDown } from "lucide-react";
 import type { AgentMessage, AssistantContentBlock, AssistantMessage, CustomMessage, ToolResultMessage } from "@/lib/types";
@@ -17,6 +18,7 @@ export interface ConversationMeta {
 }
 
 export function getUserInputText(message: AgentMessage): string | null {
+  if (isReactionNotification(message)) return null;
   if (message.role !== "user") return null;
   if (typeof message.content === "string") {
     const text = stripInteractionReminder(message.content).trim();
@@ -77,6 +79,7 @@ function hasDisplayableProcessMessage(message: AgentMessage): boolean {
 // A user message normally anchors a turn. Compaction summaries are anchors too
 // because the original user prompt may be dropped during compaction.
 function isGroupAnchor(message: AgentMessage): boolean {
+  if (isReactionNotification(message)) return false;
   if (message.role === "user") return true;
   return message.role === "custom" && (message as CustomMessage).customType === "compaction";
 }
@@ -177,6 +180,7 @@ export const CommittedTranscript = memo(function CommittedTranscript({
   };
   const renderMessage = (idx: number, options: { attachRef?: boolean; keyPrefix?: string; messageOverride?: AgentMessage; showTimestamp?: boolean } = {}): ReactNode => {
     const msg = options.messageOverride ?? messages[idx];
+    if (isReactionNotification(msg)) return null;
     if (msg.role === "toolResult" && options.keyPrefix !== "process" && Array.isArray(msg.content)) {
       const images = msg.content.filter((block): block is ImageContent => block.type === "image");
       if (images.length) return <TranscriptImages key={`tool-images-${idx}`} images={images} sessionId={sessionId} />;

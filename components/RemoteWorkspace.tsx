@@ -484,7 +484,9 @@ export function RemoteChat({ sessionId, targetId, onSessionCreated, onControlsCh
     };
     document.addEventListener("visibilitychange", resume);
     window.addEventListener("online", resume);
-    return () => { document.removeEventListener("visibilitychange", resume); window.removeEventListener("online", resume); };
+    window.addEventListener("pageshow", resume);
+    window.addEventListener("focus", resume);
+    return () => { document.removeEventListener("visibilitychange", resume); window.removeEventListener("online", resume); window.removeEventListener("pageshow", resume); window.removeEventListener("focus", resume); };
   }, [activeSessionId, loadDetail]);
 
   const applyIncrementalEvent = useCallback((id: string, event: Record<string, unknown>, metadata: RemoteEventFrame) => {

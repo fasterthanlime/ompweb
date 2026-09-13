@@ -1967,6 +1967,38 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     };
   }, [agentRunning, reconcileAgentState]);
 
+  useEffect(() => {
+    let pending = false;
+    const refresh = async () => {
+      const sid = sessionIdRef.current;
+      if (!sid || pending || document.visibilityState !== "visible") return;
+      pending = true;
+      const runId = promptRunIdRef.current;
+      try {
+        // An apparently open EventSource may have gone silent while suspended.
+        eventSourceRef.current?.close();
+        eventSourceRef.current = null;
+        eventSourceConnectRef.current = null;
+        void connectEvents(sid);
+        await loadSession(sid, false, true, runId, true);
+        if (sessionIdRef.current === sid) await reconcileAgentState(sid);
+      } finally {
+        pending = false;
+      }
+    };
+    const onReturn = () => { void refresh(); };
+    document.addEventListener("visibilitychange", onReturn);
+    window.addEventListener("pageshow", onReturn);
+    window.addEventListener("focus", onReturn);
+    window.addEventListener("online", onReturn);
+    return () => {
+      document.removeEventListener("visibilitychange", onReturn);
+      window.removeEventListener("pageshow", onReturn);
+      window.removeEventListener("focus", onReturn);
+      window.removeEventListener("online", onReturn);
+    };
+  }, [connectEvents, loadSession, reconcileAgentState]);
+
   // Sample omp's own tokensPerSecond (get_state) at a gauge-friendly cadence
   // while a run is active; the 15s reconcile above is too slow for a gauge.
   // On run end take one trailing sample: omp publishes its final throughput
