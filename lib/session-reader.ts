@@ -1,3 +1,4 @@
+import { activityThoughtSummary } from "./live-activity";
 import { existsSync, statSync } from "fs";
 import { normalize as normalizePath } from "path";
 import { getAgentDir } from "./omp/paths";
@@ -850,7 +851,7 @@ export function entryToUiMessage(
         ...message,
         content: message.content.map((block) => (
           block.type === "thinking" && typeof block.thinking === "string" && block.thinking.trim() !== ""
-            ? { ...block, thinking: "", deferred: true }
+            ? { ...block, thinking: "", deferred: true, summary: activityThoughtSummary(block.thinking).slice(0, 240) }
             : block
         )),
       };

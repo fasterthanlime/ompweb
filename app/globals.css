@@ -2772,8 +2772,8 @@ html.dark .dropdown-surface :is(select, option) {
   font-display: swap;
   src: url(/fonts/nook/font-10.ttf) format('truetype');
 }
-:root { --font-conversation: 'Jost', sans-serif; --font-heading: 'Geist', sans-serif; --font-mono: 'Iosevka Charon Mono', monospace; }
-.chat-message .markdown-body, .markdown-user-message { font-family: var(--font-conversation); font-size: 16px; line-height: 1.5; }
+:root { --font-conversation: 'Jost', sans-serif; --font-conversation-size: 16px; --font-heading: 'Geist', sans-serif; --font-mono: 'Iosevka Charon Mono', monospace; }
+.chat-message .markdown-body, .markdown-user-message { font-family: var(--font-conversation); font-size: var(--font-conversation-size); line-height: 1.5; }
 .chat-message .markdown-body p, .markdown-user-message p { max-width: 65ch; }
 .chat-input-shell { font-family: var(--font-conversation); }
 .chat-input-shell textarea { font-family: var(--font-conversation) !important; font-size: 16px !important; line-height: 1.5 !important; }

@@ -56,6 +56,7 @@ export interface ThinkingContent {
   thinking: string;
   /** Historical content omitted from the initial response and loaded on demand. */
   deferred?: boolean;
+  summary?: string;
 }
 
 export interface ToolCallContent {

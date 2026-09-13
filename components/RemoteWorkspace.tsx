@@ -523,7 +523,7 @@ export function RemoteChat({ sessionId, targetId, onSessionCreated, onControlsCh
     const message = normalizeToolCalls(rawMessage as unknown as AgentMessage);
     const index = metadata.messageIndex;
     if (typeof index !== "number" || !Number.isSafeInteger(index) || index < current.startIndex || index > current.startIndex + current.messages.length) return;
-    const next = upsertRemoteMessage(current, index, message);
+    const next = upsertRemoteMessage({ ...current, running: current.running || type === "message_update" || type === "message_start" }, index, message);
     detailRef.current = next;
     setDetail(next);
     cacheRemoteDetail(id, next);
@@ -722,7 +722,7 @@ export function RemoteChat({ sessionId, targetId, onSessionCreated, onControlsCh
           ) : (
             <div style={styles.centerState}><Cloud size={20} color="var(--accent)" aria-hidden="true" /><strong>{activeSessionId ? `Ready on ${targetId || "remote host"}` : `Start a session on ${targetId || "a remote host"}`}</strong><span style={styles.muted}>{activeSessionId ? "Send a prompt to continue this remote session." : "Your first prompt will create the remote session."}</span></div>
           )}
-          <LiveActivity threadId={activeSessionId ?? undefined} busy={isStreaming || !!controls?.isCompacting} message={detail?.messages[detail.messages.length - 1]} />
+          <LiveActivity threadId={activeSessionId ?? undefined} busy={isStreaming || !!controls?.isCompacting} messages={detail?.messages ?? []} />
         </div>
       </div>
 

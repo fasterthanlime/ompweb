@@ -7,17 +7,19 @@
   margin: 0;
   padding: 4px 16px 10px;
   color: var(--text-muted);
-  font-size: 16px;
+  font-family: var(--font-conversation);
+  font-size: var(--font-conversation-size);
   line-height: 1.5;
 }
 
 .expression {
   flex: 0 0 auto;
   color: var(--accent);
-  font-size: 16px;
+  font-size: inherit;
   line-height: 1;
   white-space: nowrap;
-  animation: expression-breathe 2.4s var(--ease-out-warm) infinite;
+  transform-origin: center bottom;
+  animation: expression-breathe 0.9s ease-in-out infinite;
 }
 
 .thought {
@@ -30,8 +32,9 @@
 
 
 @keyframes expression-breathe {
-  0%, 100% { opacity: 0.72; transform: translateY(0); }
-  50% { opacity: 1; transform: translateY(-1px); }
+  0%, 100% { opacity: 0.5; transform: translate(-2px, 1px) rotate(-5deg) scale(0.94); }
+  45% { opacity: 1; transform: translate(2px, -6px) rotate(5deg) scale(1.12); }
+  70% { opacity: 0.8; transform: translate(0, 0) rotate(-2deg) scale(1.02); }
 }
 
 @media (prefers-reduced-motion: reduce) {

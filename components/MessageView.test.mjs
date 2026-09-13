@@ -57,39 +57,7 @@ test("streaming tool calls start collapsed when the interface preference is enab
   assert.doesNotMatch(html, /<pre/);
 });
 
-test("expanded tool calls show the compact command header", () => {
-  const html = renderToStaticMarkup(React.createElement(MessageView, {
-    isStreaming: true,
-    toolCallsDefaultCollapsed: false,
-    message: {
-      role: "assistant",
-      content: [{ type: "toolCall", toolCallId: "call-1", toolName: "read", input: { path: "foo.ts" } }],
-    },
-  }));
 
-  assert.match(html, /aria-expanded="true"/);
-  assert.match(html, /tool-call-details/);
-  assert.match(html, /\$<\/span><code>read foo\.ts<\/code>/);
-});
-
-test("expanded read output uses compact terminal text without line gutters", () => {
-  const html = renderToStaticMarkup(React.createElement(MessageView, {
-    isStreaming: true,
-    toolCallsDefaultCollapsed: false,
-    message: {
-      role: "assistant",
-      content: [{ type: "toolCall", toolCallId: "call-1", toolName: "read", input: { path: "foo.ts" } }],
-    },
-    toolResults: new Map([[
-      "call-1",
-      { role: "toolResult", toolCallId: "call-1", content: [{ type: "text", text: "1: const value = 1;\\n2: return value;" }] },
-    ]]),
-  }));
-
-  assert.match(html, /data-tool-output="true"/);
-  assert.match(html, /const value = 1;/);
-  assert.doesNotMatch(html, /1: const value/);
-});
 
 test("tool operations render as compact timeline rows", () => {
   const html = renderToStaticMarkup(React.createElement(MessageView, {

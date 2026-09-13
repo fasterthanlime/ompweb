@@ -7,6 +7,7 @@ import { useTheme } from "@/hooks/useTheme";
 interface Props {
   code: string;
   lang: string;
+  showLineNumbers?: boolean;
 }
 
 function PlainCode({ code }: { code: string }) {
@@ -29,7 +30,7 @@ function PlainCode({ code }: { code: string }) {
   );
 }
 
-export function SyntaxHighlightedCode({ code, lang }: Props) {
+export function SyntaxHighlightedCode({ code, lang, showLineNumbers = true }: Props) {
   const { isDark } = useTheme();
   const [ready, setReady] = useState(() => isLanguageRegistered(lang));
 
@@ -51,7 +52,7 @@ export function SyntaxHighlightedCode({ code, lang }: Props) {
     <SyntaxHighlighter
       language={lang || "text"}
       style={isDark ? vscDarkPlus : vs}
-      showLineNumbers
+      showLineNumbers={showLineNumbers}
       lineNumberStyle={{ color: "var(--text-dim)", fontStyle: "normal" }}
       customStyle={{
         margin: 0,
@@ -59,6 +60,7 @@ export function SyntaxHighlightedCode({ code, lang }: Props) {
         fontSize: 12.5,
         lineHeight: 1.62,
         borderRadius: 0,
+        border: 0,
         backgroundColor: "color-mix(in srgb, var(--bg) 88%, var(--bg-panel))",
       }}
       codeTagProps={{ style: { fontFamily: "var(--font-mono)" } }}

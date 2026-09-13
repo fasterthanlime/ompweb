@@ -788,7 +788,7 @@ export function ChatWindow({ session, newSessionCwd, toolCallsDefaultCollapsed =
                 sessionId={session?.id ?? sessionIdRef.current ?? undefined}
               />
             )}
-            <LiveActivity threadId={session?.id ?? sessionIdRef.current ?? undefined} busy={sessionBusy || isCompacting} message={streamState.streamingMessage as AgentMessage | null ?? messages[messages.length - 1]} />
+            <LiveActivity threadId={session?.id ?? sessionIdRef.current ?? undefined} busy={sessionBusy || isCompacting || streamState.isStreaming} messages={messages} message={streamState.streamingMessage as AgentMessage | null} />
 
             <div ref={messagesEndRef} />
             </div>

@@ -1,5 +1,7 @@
 "use client";
 import { stripInteractionReminder } from "@/lib/interaction-reminder-text";
+import { ToolActionIcon, ToolCommand, toolKind } from "./ToolCommand";
+import { ToolOutput } from "./ToolOutput";
 import { isReactionNotification } from "@/lib/reaction-notification";
 
 import { SmoothSurface } from "./SmoothSurface";
@@ -480,7 +482,7 @@ function AssistantMessageView({
   const time = showTimestamp ? formatTime(message.timestamp, locale) : null;
   const blockItems = (message.content ?? [])
     .map((block, originalIndex) => ({ block, originalIndex }))
-    .filter(({ block }) => !isEmptyThinkingBlock(block, { isStreaming }));
+    .filter(({ block }) => block.type !== "thinking" || !toolCallsDefaultCollapsed && !isEmptyThinkingBlock(block, { isStreaming }));
   const blocks = blockItems.map(({ block }) => block);
   const hasActivityBlocks = blocks.some((block) => block.type === "thinking" || block.type === "toolCall");
   const hasRenderableBlocks = blocks.some((block) => block.type === "text" ? Boolean((block as TextContent).text?.trim()) : block.type !== "thinking" || Boolean((block as ThinkingContent).thinking?.trim()));
@@ -794,17 +796,18 @@ const ToolCallBlock = memo(function ToolCallBlock({ block, result, duration, isS
   const isError = result?.isError ?? false;
   const resultDiff = expanded && result && !isError ? getResultDiff(result) : null;
   const resultMeta = getToolResultMeta(result);
-  const command = formatToolCommand(block);
+  const kind = toolKind(block.toolName);
+  const lastOutputLine = resultText && ["bash", "eval", "grep", "glob", "web_search", "task", "hub"].includes(kind) ? resultText.replace(/\u001b\[[0-9;]*[A-Za-z]/g, "").trimEnd().split(/[\r\n]/).filter(line => line.trim()).at(-1) : null;
 
   return (
     <div className="activity-row" data-activity-operation="true">
       <Collapsible open={expanded} onOpenChange={setExpanded}>
-        <CollapsibleTrigger className="activity-row-trigger">
+        <CollapsibleTrigger className="activity-row-trigger" aria-label={`${block.toolName}: ${getToolPreview(block)}`}>
           <span className={`activity-row-indicator${isError ? " activity-row-indicator-error" : ""}`} aria-hidden>
             {isError ? <CircleAlert size={12} strokeWidth={1.8} /> : result ? <Check size={12} strokeWidth={2} /> : <LoaderCircle size={12} strokeWidth={1.8} className="activity-row-spinner" />}
           </span>
-          <span className={`activity-row-tool${isError ? " activity-row-tool-error" : ""}`}>{block.toolName}</span>
-          <span className="activity-row-preview">{getToolPreview(block)}</span>
+          <ToolActionIcon name={block.toolName} />
+          <span className="activity-row-preview"><ToolCommand block={block} /></span>
           {duration !== undefined && (
             <span className="activity-row-duration">{t("messageView.durationSeconds", { seconds: duration })}</span>
           )}
@@ -819,19 +822,17 @@ const ToolCallBlock = memo(function ToolCallBlock({ block, result, duration, isS
             }}
           />
         </CollapsibleTrigger>
+        {!expanded && lastOutputLine && <div className="activity-row-secondary" title={lastOutputLine} style={{ fontFamily: "var(--font-mono)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{lastOutputLine}</div>}
         {resultMeta && <div className="activity-row-secondary">{resultMeta}</div>}
         {expanded && (
           <div className={`tool-call-details${isError ? " tool-call-details-error" : ""}`}>
-            <div className="tool-call-command">
-              <span className="tool-call-command-prompt" aria-hidden>$</span>
-              <code>{command}</code>
-            </div>
+            {kind === "hub" && typeof block.input?.message === "string" && <pre style={{ padding: 12, whiteSpace: "pre-wrap", font: "inherit" }}>{block.input.message}</pre>}
             <TaskResultPanel details={result?.details} />
             {result ? (
               resultDiff ? (
                 <PairedDiffResult diff={resultDiff} />
               ) : (
-                <PairedResult text={formatToolOutput(resultText ?? "", block.toolName)} isEmpty={resultIsEmpty} isError={isError} />
+                <ToolOutput block={block} text={resultText ?? ""} isError={isError} fallback={<PairedResult text={formatToolOutput(resultText ?? "", block.toolName)} isEmpty={resultIsEmpty} isError={isError} />} />
               )
             ) : null}
           </div>
@@ -1731,18 +1732,6 @@ function getToolPreview(block: ToolCallContent): string {
 
   const first = input[keys[0]];
   return String(first).slice(0, 120);
-}
-function formatToolCommand(block: ToolCallContent): string {
-  const input = block.input;
-  if (input && typeof input.command === "string") return input.command;
-  if (input && typeof input.path === "string") return `${block.toolName} ${input.path}`;
-  if (input && typeof input.file_path === "string") return `${block.toolName} ${input.file_path}`;
-  if (input && typeof input.query === "string") return `${block.toolName} ${input.query}`;
-  try {
-    return `${block.toolName} ${JSON.stringify(input)}`;
-  } catch {
-    return block.toolName;
-  }
 }
 
 function formatToolOutput(text: string, toolName: string): string {
