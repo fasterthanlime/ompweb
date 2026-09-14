@@ -28,7 +28,7 @@ xcodebuild -project Nook.xcodeproj -scheme Nook \
 
 `NOOK_SERVER_URL` and `NOOK_LOGIN_URL` in `project.yml` populate the generated
 Info.plist.
-Defaults are `https://omp-amos.vxn.rs/` and `https://auth.vxn.rs/`. Login navigation
+Defaults are `https://omp-amos.vxn.rs/`, `https://nook.vxn.rs/` (rooms), and `https://auth.vxn.rs/`. Login navigation
 is allowed, but only the exact Nook origin and main frame can access audio.
 External links open outside the app. Cookie storage survives app launches.
 

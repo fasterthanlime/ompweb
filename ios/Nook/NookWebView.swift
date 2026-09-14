@@ -16,6 +16,8 @@ final class NookWebController: UIViewController, WKNavigationDelegate, WKUIDeleg
     private var commands: [UUID: Task<Void, Never>] = [:]
     private let serverURL = URL(string: Bundle.main.object(forInfoDictionaryKey: "NookServerURL") as? String ?? "https://omp-amos.vxn.rs/")!
     private let loginURL = URL(string: Bundle.main.object(forInfoDictionaryKey: "NookLoginURL") as? String ?? "https://auth.vxn.rs/")!
+    /// The rooms (nookd) origin; a second first-party surface behind the same portal.
+    private let roomsURL = URL(string: Bundle.main.object(forInfoDictionaryKey: "NookRoomsURL") as? String ?? "https://nook.vxn.rs/")!
     private let logger = Logger(subsystem: "rs.vxn.nook", category: "web")
 
     override func viewDidLoad() {
@@ -60,7 +62,11 @@ final class NookWebController: UIViewController, WKNavigationDelegate, WKUIDeleg
 
     private func trusted(_ url: URL?) -> Bool {
         guard let url else { return false }
-        return url.scheme == serverURL.scheme && url.host == serverURL.host && url.port == serverURL.port
+        return sameOrigin(url, serverURL) || sameOrigin(url, roomsURL)
+    }
+
+    private func sameOrigin(_ a: URL, _ b: URL) -> Bool {
+        a.scheme == b.scheme && a.host == b.host && a.port == b.port
     }
 
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage,
@@ -87,7 +93,7 @@ final class NookWebController: UIViewController, WKNavigationDelegate, WKUIDeleg
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
                  decisionHandler: @escaping @MainActor (WKNavigationActionPolicy) -> Void) {
         guard let url = navigationAction.request.url else { decisionHandler(.cancel); return }
-        let login = url.scheme == loginURL.scheme && url.host == loginURL.host && url.port == loginURL.port
+        let login = sameOrigin(url, loginURL)
         if trusted(url) || login { decisionHandler(.allow) }
         else {
             decisionHandler(.cancel)

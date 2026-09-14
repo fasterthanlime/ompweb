@@ -14,6 +14,7 @@ settings:
     INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
     NOOK_LOGIN_URL: https://auth.vxn.rs/
     NOOK_SERVER_URL: https://omp-amos.vxn.rs/
+    NOOK_ROOMS_URL: https://nook.vxn.rs/
     CURRENT_PROJECT_VERSION: 1
     MARKETING_VERSION: '0.1.0'
     TARGETED_DEVICE_FAMILY: '1,2'
@@ -32,6 +33,7 @@ targets:
       properties:
         NookServerURL: $(NOOK_SERVER_URL)
         NookLoginURL: $(NOOK_LOGIN_URL)
+        NookRoomsURL: $(NOOK_ROOMS_URL)
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
           - UIInterfaceOrientationPortraitUpsideDown
