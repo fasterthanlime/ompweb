@@ -64,7 +64,7 @@ export function useRoom(roomId: string | null) {
       source.onopen = () => setConnected(true);
       source.onerror = () => setConnected(false);
       // nookd names each SSE event after the entry kind; listen for all of them.
-      for (const kind of ["message", "tool_call", "tool_result", "signal", "teach", "error", "usage", "reasoning", "plan", "expression"]) {
+      for (const kind of ["message", "tool_call", "tool_result", "signal", "teach", "error", "usage", "reasoning", "expression"]) {
         source.addEventListener(kind, ev => append([JSON.parse((ev as MessageEvent).data) as RoomEntry]));
       }
     })().catch(e => { if (!cancelled) setError(String(e)); });
@@ -130,4 +130,69 @@ export function useRooms(intervalMs = 5000) {
     return (await res.json()) as { id: string };
   }, []);
   return { rooms, error, loaded, create };
+}
+
+/** A node as the API lists it: the row plus what a list needs beside it. */
+export interface NodeRow {
+  node: {
+    id: string;
+    title: string;
+    body: string;
+    state: "open" | "doing" | "done" | "dropped";
+    assignee: string | null;
+    project: string | null;
+    tags: string[];
+    priority: number;
+    due: string | null;
+    created_by: string;
+    created_at: string;
+    updated_at: string;
+    closed_at: string | null;
+  };
+  blocked_by: string[];
+  rooms: string[];
+}
+
+export interface NodeQuery {
+  assignee?: string;
+  project?: string;
+  tag?: string;
+  state?: string;
+  blocked?: boolean;
+  room?: string;
+}
+
+/** A narrowing of the graph, refreshed on an interval and on demand. */
+export function useNodes(query: NodeQuery, intervalMs = 4000) {
+  const [nodes, setNodes] = useState<NodeRow[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const key = JSON.stringify(query);
+  const load = useCallback(async () => {
+    const q = JSON.parse(key) as NodeQuery;
+    const params = new URLSearchParams();
+    for (const [k, v] of Object.entries(q)) if (v !== undefined && v !== null && v !== "") params.set(k, String(v));
+    try {
+      const res = await fetch(`/api/nodes?${params}`, { cache: "no-store" });
+      if (!res.ok) throw new Error(`nodes: ${res.status}`);
+      setNodes((await res.json()) as NodeRow[]);
+      setError(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }, [key]);
+  useEffect(() => {
+    void load();
+    const timer = setInterval(() => void load(), intervalMs);
+    return () => clearInterval(timer);
+  }, [load, intervalMs]);
+  const patch = useCallback(async (id: string, body: Record<string, unknown>, actor = "amos") => {
+    const res = await fetch(`/api/nodes/${id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ actor, ...body }) });
+    await load();
+    return res.ok;
+  }, [load]);
+  const comment = useCallback(async (id: string, text: string, actor = "amos") => {
+    const res = await fetch(`/api/nodes/${id}/comments`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ actor, text }) });
+    return res.ok;
+  }, []);
+  return { nodes, error, reload: load, patch, comment };
 }

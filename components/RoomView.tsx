@@ -8,8 +8,9 @@ import { ChatInput, type ChatInputHandle } from "@/components/ChatInput";
 import { useAudio } from "@/hooks/useAudio";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { usePrefersReducedMotion } from "@/hooks/usePrefersReducedMotion";
-import { useRoom, useRooms, type RoomEntry } from "@/hooks/useRoom";
-import { modelRoom, str, type PlanStep, type RoomModel } from "@/lib/room-entries";
+import { useNodes, useRoom, useRooms, type RoomEntry } from "@/hooks/useRoom";
+import { NodeList } from "@/components/NodeList";
+import { modelRoom, str, type RoomModel } from "@/lib/room-entries";
 import { CHAT_COLUMN_MAX_WIDTH } from "@/lib/chat-layout";
 import type { AgentMessage } from "@/lib/types";
 
@@ -113,25 +114,6 @@ function latestStatus(entries: RoomEntry[]): string | null {
   return pendingIntent;
 }
 
-const STEP_MARK: Record<PlanStep["state"], string> = { todo: "○", doing: "◐", done: "●", dropped: "×" };
-
-function Plan({ steps }: { steps: PlanStep[] }) {
-  const done = steps.filter(s => s.state === "done").length;
-  return (
-    <div style={{ margin: "0 0 12px", padding: "8px 12px", border: "1px solid var(--border)", borderRadius: "var(--radius-control)", background: "var(--bg-subtle)", fontSize: 12.5 }}>
-      <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 4, color: "var(--text-muted)", fontSize: 11, fontWeight: 600, letterSpacing: "0.05em", textTransform: "uppercase" }}>
-        plan <span style={{ fontWeight: 400, letterSpacing: 0, textTransform: "none" }}>{done}/{steps.length}</span>
-      </div>
-      {steps.map((st, i) => (
-        <div key={i} style={{ display: "flex", gap: 8, alignItems: "baseline", color: st.state === "done" || st.state === "dropped" ? "var(--text-dim)" : "var(--text)", textDecoration: st.state === "dropped" ? "line-through" : undefined }}>
-          <span aria-label={st.state} style={{ flexShrink: 0, color: st.state === "doing" ? "var(--accent)" : "inherit", fontFamily: "var(--font-mono)" }}>{STEP_MARK[st.state] ?? "○"}</span>
-          <span>{st.text}</span>
-        </div>
-      ))}
-    </div>
-  );
-}
-
 function RoomStatus({ running, status, open }: { running: boolean; status: string | null; open: Set<string> }) {
   const reducedMotion = usePrefersReducedMotion();
   if (!running && open.size === 0) return null;
@@ -175,6 +157,7 @@ function RoomList({ rooms, error, loaded, selected, onSelect, onCreate }: {
           <ArrowLeft size={14} aria-hidden="true" /> nook
         </Link>
         <span style={{ marginLeft: 2, fontSize: 11, fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--text-muted)" }}>Rooms</span>
+        <Link href={graphHref} style={{ fontSize: 11, fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--text-muted)", textDecoration: "none" }}>Graph</Link>
         <button
           type="button"
           onClick={() => setDraft(draft === null ? "" : null)}
@@ -240,11 +223,16 @@ function RoomList({ rooms, error, loaded, selected, onSelect, onCreate }: {
   );
 }
 
+/** Under nook the graph is /rooms/graph; served by nookd it is /graph. */
+const graphHref = typeof location !== "undefined" && location.pathname.startsWith("/rooms") ? "/rooms/graph" : "/graph";
+
 export function RoomView({ initialRoom }: { initialRoom: string | null }) {
   const isMobile = useIsMobile();
   const { rooms, error: roomsError, loaded, create } = useRooms(3000);
   const [roomId, setRoomId] = useState<string | null>(initialRoom);
   const { entries, connected, error, say, stop } = useRoom(roomId);
+  const roomNodes = useNodes({ room: roomId ?? "", state: "open,doing,done,dropped" });
+  const openQuestions = roomNodes.nodes.filter(n => n.node.tags.includes("question") && (n.node.state === "open" || n.node.state === "doing")).length;
   const model = modelRoom(entries);
   const [showList, setShowList] = useState(!initialRoom);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -306,14 +294,14 @@ export function RoomView({ initialRoom }: { initialRoom: string | null }) {
                 <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{model.expression.caption}</span>
               </span>
             )}
-            {model.openAsks.length > 0 && <span style={{ color: "var(--accent-strong)", fontSize: 11, fontWeight: 600, flexShrink: 0 }}>{model.openAsks.length} open question{model.openAsks.length === 1 ? "" : "s"}</span>}
+            {openQuestions > 0 && <span style={{ color: "var(--accent-strong)", fontSize: 11, fontWeight: 600, flexShrink: 0 }}>{openQuestions} open question{openQuestions === 1 ? "" : "s"}</span>}
             {error && <span style={{ color: "var(--status-error)", fontSize: 11 }}>{error}</span>}
             <Link href="/" style={{ marginLeft: "auto", color: "var(--text-muted)", fontSize: 12, textDecoration: "none" }}>nook</Link>
           </header>
           <div ref={scrollRef} className="min-w-0 flex-1 overflow-y-auto pt-6">
             <div style={{ padding: `0 ${COLUMN_PADDING}px` }}>
               <div style={{ maxWidth: CHAT_COLUMN_MAX_WIDTH, margin: "0 auto" }}>
-                {model.plan && model.plan.length > 0 && <Plan steps={model.plan} />}
+                {roomId && roomNodes.nodes.length > 0 && <NodeList compact title="nodes" nodes={roomNodes.nodes} onPatch={roomNodes.patch} onComment={roomNodes.comment} />}
                 {roomId ? <Rows model={model} /> : <div style={{ color: "var(--text-muted)", fontSize: 13, padding: 24, textAlign: "center" }}>Pick a room.</div>}
                 <RoomStatus running={running} status={status} open={model.open} />
                 <div ref={endRef} />

@@ -35,15 +35,8 @@ export interface RoomRow {
   message?: UserMessage | AssistantMessage;
 }
 
-export interface PlanStep {
-  text: string;
-  state: "todo" | "doing" | "done" | "dropped";
-}
-
 export interface RoomModel {
   rows: RoomRow[];
-  /** The model's latest plan, if it made one. */
-  plan: PlanStep[] | null;
   /** The model's latest expression. */
   expression: { kaomoji: string; caption: string } | null;
   /** Asks with no human message after them: the questions still floating. */
@@ -64,16 +57,12 @@ export function modelRoom(entries: RoomEntry[]): RoomModel {
   const acks = new Map<string, RoomEntry>();
   const open = new Set<string>();
   const refByCall = new Map<string, string>();
-  let plan: PlanStep[] | null = null;
   let expression: { kaomoji: string; caption: string } | null = null;
   let openAsks: RoomEntry[] = [];
   for (const e of entries) {
     const b = e.body;
     const ts = Date.parse(e.created_at);
     switch (e.kind) {
-      case "plan":
-        plan = Array.isArray(b.steps) ? (b.steps as PlanStep[]) : null;
-        break;
       case "expression":
         expression = { kaomoji: str(b.kaomoji), caption: str(b.caption) };
         break;
@@ -88,9 +77,9 @@ export function modelRoom(entries: RoomEntry[]): RoomModel {
         break;
       }
       case "tool_call":
-        // Room-state tools have their own rows (plan strip, header); the
-        // call itself is not worth a line.
-        if (b.name === "plan" || b.name === "expression") break;
+        // Room-state tools have their own surfaces (the graph, the header);
+        // the call itself is not worth a line.
+        if (b.name === "nodes" || b.name === "expression") break;
         rows.push({
           entry: e,
           message: {
@@ -138,5 +127,5 @@ export function modelRoom(entries: RoomEntry[]): RoomModel {
     const ack = acks.get(ref);
     result.details = { ref, ack: ack ? { verdict: ack.body.verdict, text: ack.body.text } : undefined, open: open.has(ref) };
   }
-  return { rows, toolResults, acks, open, refByCall, plan, expression, openAsks };
+  return { rows, toolResults, acks, open, refByCall, expression, openAsks };
 }
