@@ -43,6 +43,8 @@
     "start:lan": "node --experimental-strip-types server/omp-web-server.ts -H 0.0.0.0 -p 30177",
     "test": "node --experimental-strip-types --test lib/*.test.mjs lib/omp/*.test.mjs components/*.test.mjs components/ui/*.test.mjs hooks/*.test.mjs bin/*.test.mjs",
     "typecheck": "tsc --noEmit",
+    "rooms:build": "vite build -c vite.rooms.config.ts",
+    "rooms:dev": "vite -c vite.rooms.config.ts",
     "lint": "eslint .",
     "deploy": "node bin/deploy-nook.mjs deploy",
     "deploy:status": "node bin/deploy-nook.mjs status",
@@ -69,11 +71,13 @@
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.2.2",
+    "@tailwindcss/vite": "^4.3.3",
     "@types/css-tree": "^3.2.0",
     "@types/node": "^25",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "@types/react-syntax-highlighter": "^15.5.13",
+    "@vitejs/plugin-react": "^6.1.1",
     "eslint": "^9",
     "eslint-config-next": "16.3.0",
     "jiti": "^2.7.0",
@@ -88,6 +92,7 @@
     "remark-gfm": "^4.0.1",
     "remark-math": "^6.0.0",
     "tailwindcss": "^4.2.2",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vite": "^8.3.0"
   }
 }

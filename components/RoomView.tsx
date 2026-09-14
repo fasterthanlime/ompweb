@@ -1,251 +1,306 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useRef, useState } from "react";
-import { MarkdownBody } from "@/components/MarkdownBody";
-import { DictationControl } from "@/components/DictationControl";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { ArrowLeft, Plus } from "lucide-react";
+import { MessageView } from "@/components/MessageView";
+import { ChatInput, type ChatInputHandle } from "@/components/ChatInput";
+import { useAudio } from "@/hooks/useAudio";
+import { useIsMobile } from "@/hooks/useIsMobile";
+import { usePrefersReducedMotion } from "@/hooks/usePrefersReducedMotion";
 import { useRoom, useRooms, type RoomEntry } from "@/hooks/useRoom";
+import { modelRoom, str, type RoomModel } from "@/lib/room-entries";
+import { CHAT_COLUMN_MAX_WIDTH } from "@/lib/chat-layout";
+import type { AgentMessage } from "@/lib/types";
 
 /**
- * A nookd room, rendered as what it is: an ordered list of entries. Tool
- * calls show their intent; results show their ref and, once it lands, the
- * ack that paid for it. Surprises stay highlighted until resolved. No
- * adapter to the OMP session model - that is the point.
+ * A nookd room. Messages and tool blocks go through MessageView, so they
+ * look like every other conversation in nook; the room's own kinds -
+ * found/ask/claim, a non-expected ack, the teacher - are rows of their own
+ * in the same column. The composer is ChatInput.
  */
 
-const MARK = "🪧🦊";
+const COLUMN_PADDING = 16;
 
-function str(v: unknown): string {
-  return typeof v === "string" ? v : "";
-}
-
-/** Assistant text with its signal lines removed; they render as their own rows. */
-function prose(text: string): string {
-  let fence = false;
-  return text
-    .split("\n")
-    .filter(line => {
-      const s = line.trim();
-      if (s.startsWith("```")) fence = !fence;
-      return fence || !s.startsWith(MARK);
-    })
-    .join("\n")
-    .trim();
-}
-
-/** Ack signals by ref, latest wins; and the refs whose surprise is still open. */
-function ackIndex(entries: RoomEntry[]) {
-  const acks = new Map<string, RoomEntry>();
-  const open = new Set<string>();
-  for (const e of entries) {
-    if (e.kind !== "signal") continue;
-    const ref = str(e.body.ref);
-    if (!ref) continue;
-    const signal = str(e.body.signal);
-    if (signal === "ack") {
-      acks.set(ref, e);
-      if (e.body.verdict === "surprise") open.add(ref);
-      else open.delete(ref);
-    } else if (signal === "found" || signal === "ask") {
-      open.delete(ref);
-    }
-  }
-  return { acks, open };
-}
-
-function Time({ at }: { at: string }) {
-  return <span className="tabular-nums" style={{ color: "var(--text-muted)", fontSize: 11 }}>{at.slice(11, 19)}</span>;
-}
-
-function Row({ e, acks, open }: { e: RoomEntry; acks: Map<string, RoomEntry>; open: Set<string> }) {
+function SignalRow({ e, open }: { e: RoomEntry; open: Set<string> }) {
   const b = e.body;
-  switch (e.kind) {
-    case "message": {
-      const mine = b.role === "user";
-      const text = mine ? str(b.text) : prose(str(b.text));
-      if (!text) return null;
-      return (
-        <div className="px-3 py-2" style={{ background: mine ? "var(--bg-panel)" : undefined, borderRadius: 8 }}>
-          <div className="mb-1 flex items-baseline gap-2">
-            <span style={{ fontWeight: 600, fontSize: 12 }}>{e.author}</span>
-            <Time at={e.created_at} />
-          </div>
-          <MarkdownBody>{text}</MarkdownBody>
-        </div>
-      );
-    }
-    case "tool_call": {
-      const args = b.arguments as Record<string, unknown> | undefined;
-      const summary = str(args?.command) || str(args?.path) || str(args?.pattern) || str(args?.job) || "";
-      return (
-        <div className="px-3 py-1 font-mono" style={{ fontSize: 12, color: "var(--text-muted)" }}>
-          <span style={{ color: "var(--text)" }}>{str(b.name)}</span>
-          {str(args?.i) && <span> · {str(args?.i)}</span>}
-          {summary && <div className="truncate" title={summary}>{summary}</div>}
-        </div>
-      );
-    }
-    case "tool_result": {
-      const ref = str(b.ref);
-      const ack = ref ? acks.get(ref) : undefined;
-      const failed = b.failed === true;
-      const isOpen = ref !== "" && open.has(ref);
-      const output = str(b.output);
-      return (
-        <details className="px-3 py-1" style={{ borderLeft: `3px solid ${isOpen ? "var(--accent-strong)" : failed ? "var(--status-error)" : "var(--border)"}` }}>
-          <summary className="cursor-pointer font-mono" style={{ fontSize: 12 }}>
-            {ref && <span style={{ fontWeight: 600 }}>{ref}</span>}
-            {!ref && <span style={{ color: "var(--text-muted)" }}>refused</span>}
-            {failed && <span style={{ color: "var(--status-error)" }}> failed</span>}
-            {ack ? (
-              <span style={{ color: ack.body.verdict === "expected" ? "var(--text-muted)" : "var(--accent-strong)" }}>
-                {" "}· {str(ack.body.verdict)} {str(ack.body.text)}
-              </span>
-            ) : ref ? (
-              <span style={{ color: "var(--text-muted)" }}> · unacked</span>
-            ) : null}
-          </summary>
-          <pre className="mt-1 overflow-x-auto whitespace-pre-wrap" style={{ fontSize: 12, maxHeight: 400 }}>{output}</pre>
-        </details>
-      );
-    }
-    case "signal": {
-      const signal = str(b.signal);
-      if (signal === "ack" || signal === "status") return null;
-      const ref = str(b.ref);
-      const tone = signal === "claim" ? "var(--status-success)" : signal === "ask" ? "var(--accent-strong)" : "var(--text)";
-      return (
-        <div className="px-3 py-1" style={{ fontSize: 13 }}>
-          <span style={{ fontWeight: 700, color: tone }}>{signal}</span>
-          {ref && <span className="font-mono" style={{ color: "var(--text-muted)" }}> {ref}</span>}
-          <span>: {str(b.text)}</span>
-        </div>
-      );
-    }
-    case "teach":
-      return (
-        <div className="px-3 py-1 italic" style={{ fontSize: 12, color: "var(--accent-strong)" }}>teacher: {str(b.text)}</div>
-      );
-    case "error":
-      return <div className="px-3 py-1" style={{ fontSize: 12, color: "var(--status-error)" }}>error: {str(b.text)}</div>;
-    default:
-      return null;
-  }
+  const signal = str(b.signal);
+  const ref = str(b.ref);
+  const tone =
+    signal === "claim" ? "var(--status-success)"
+    : signal === "ask" ? "var(--accent-strong)"
+    : signal === "found" ? "var(--accent)"
+    : "var(--text)";
+  const openList = Array.isArray(b.open) ? (b.open as string[]) : [];
+  return (
+    <div
+      style={{
+        display: "flex", alignItems: "baseline", gap: 8, minWidth: 0,
+        margin: "6px 0", padding: "7px 10px",
+        border: `1px solid color-mix(in srgb, ${tone} 28%, transparent)`,
+        borderRadius: "var(--radius-control)",
+        background: `color-mix(in srgb, ${tone} 5%, transparent)`,
+        fontSize: 12.5,
+      }}
+    >
+      <span style={{ color: tone, fontWeight: 600, flexShrink: 0 }}>{signal}</span>
+      {ref && <span style={{ fontFamily: "var(--font-mono)", color: open.has(ref) ? "var(--accent-strong)" : "var(--text-dim)", flexShrink: 0 }}>{ref}</span>}
+      <span style={{ minWidth: 0 }}>{str(b.text)}</span>
+      {signal === "claim" && openList.length > 0 && (
+        <span style={{ marginLeft: "auto", color: "var(--accent-strong)", fontFamily: "var(--font-mono)", fontSize: 11, flexShrink: 0 }}>open: {openList.join(" ")}</span>
+      )}
+    </div>
+  );
 }
 
-function Composer({ onSend, disabled }: { onSend: (text: string) => Promise<boolean>; disabled: boolean }) {
-  const [text, setText] = useState("");
-  const [preview, setPreview] = useState("");
-  const ref = useRef<HTMLTextAreaElement>(null);
-  const submit = async (t: string) => {
-    const body = t.trim();
-    if (!body) return;
-    if (await onSend(body)) { setText(""); setPreview(""); }
+function NoteRow({ label, text, tone }: { label: string; text: string; tone: string }) {
+  return (
+    <div style={{ margin: "6px 0", padding: "6px 10px", borderLeft: `2px solid ${tone}`, color: "var(--text-muted)", fontSize: 12 }}>
+      <span style={{ color: tone, fontWeight: 600, marginRight: 6 }}>{label}</span>{text}
+    </div>
+  );
+}
+
+function Rows({ model }: { model: RoomModel }) {
+  const { rows, toolResults, open } = model;
+  return (
+    <>
+      {rows.map((row, i) => {
+        const e = row.entry;
+        if (row.message) {
+          const prev = rows[i - 1]?.message;
+          const showTimestamp = !prev || prev.role !== row.message.role || (e.created_at.slice(0, 16) !== rows[i - 1]!.entry.created_at.slice(0, 16));
+          return (
+            <MessageView
+              key={e.seq}
+              message={row.message as AgentMessage}
+              toolResults={toolResults}
+              entryId={e.id}
+              showTimestamp={showTimestamp}
+              prevTimestamp={prev?.timestamp}
+              toolCallsDefaultCollapsed
+            />
+          );
+        }
+        if (e.kind === "signal") return <SignalRow key={e.seq} e={e} open={open} />;
+        if (e.kind === "teach") return <NoteRow key={e.seq} label="teacher" text={str(e.body.text)} tone="var(--accent-strong)" />;
+        if (e.kind === "error") return <NoteRow key={e.seq} label="error" text={str(e.body.text)} tone="var(--status-error)" />;
+        return null;
+      })}
+    </>
+  );
+}
+
+/**
+ * The "thought" line for a running turn: the latest status signal, else the
+ * intent of a tool call still waiting on its result.
+ */
+function latestStatus(entries: RoomEntry[]): string | null {
+  let pendingIntent: string | null = null;
+  const answered = new Set<string>();
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const e = entries[i]!;
+    if (e.kind === "message" && e.body.role === "user") break;
+    if (e.kind === "signal" && e.body.signal === "status") return str(e.body.text);
+    if (e.kind === "tool_result") answered.add(str(e.body.id));
+    if (e.kind === "tool_call" && !answered.has(str(e.body.id)) && !pendingIntent) {
+      const args = e.body.arguments as Record<string, unknown> | undefined;
+      pendingIntent = str(args?.i) || str(e.body.name);
+    }
+  }
+  return pendingIntent;
+}
+
+function RoomStatus({ running, status, open }: { running: boolean; status: string | null; open: Set<string> }) {
+  const reducedMotion = usePrefersReducedMotion();
+  if (!running && open.size === 0) return null;
+  return (
+    <div role="status" aria-live="polite" style={{ display: "flex", alignItems: "center", gap: 8, minHeight: 28, padding: "4px 2px", color: "var(--text-muted)", fontSize: 12 }}>
+      {running && <span aria-hidden className={`live-status-dot inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-accent${reducedMotion ? "" : " live-pulse"}`} />}
+      {running && <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{status ?? "Working"}</span>}
+      {open.size > 0 && <span style={{ marginLeft: "auto", color: "var(--accent-strong)", fontFamily: "var(--font-mono)", fontSize: 11 }}>open: {[...open].join(" ")}</span>}
+    </div>
+  );
+}
+
+function RoomList({ rooms, error, loaded, selected, onSelect, onCreate }: {
+  rooms: { id: string; name: string; last_at: string; running: boolean }[];
+  error: string | null;
+  loaded: boolean;
+  selected: string | null;
+  onSelect: (id: string) => void;
+  onCreate: (name: string) => Promise<boolean>;
+}) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const [now, setNow] = useState(0);
+  useEffect(() => {
+    setNow(Date.now());
+    const timer = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(timer);
+  }, []);
+  const relative = (iso: string) => {
+    if (!now) return "";
+    const m = Math.max(0, Math.round((now - Date.parse(iso)) / 60000));
+    if (m < 1) return "now";
+    if (m < 60) return `${m}m`;
+    const h = Math.round(m / 60);
+    if (h < 48) return `${h}h`;
+    return `${Math.round(h / 24)}d`;
   };
   return (
-    <div className="flex items-end gap-2 border-t p-2" style={{ borderColor: "var(--border)" }}>
-      <textarea
-        ref={ref}
-        value={preview ? `${text}${text ? " " : ""}${preview}` : text}
-        onChange={ev => setText(ev.target.value)}
-        onKeyDown={ev => {
-          if (ev.key === "Enter" && !ev.shiftKey && !ev.nativeEvent.isComposing) { ev.preventDefault(); void submit(text); }
-        }}
-        rows={2}
-        placeholder="Say something to the room"
-        className="flex-1 resize-none rounded-md p-2"
-        style={{ background: "var(--bg-panel)", fontSize: 14 }}
-        disabled={disabled}
-      />
-      <DictationControl
-        sendLabel="Send"
-        onPreview={p => setPreview(p)}
-        onTranscript={(t, send) => {
-          setPreview("");
-          const next = text ? `${text} ${t}` : t;
-          if (send) void submit(next); else setText(next);
-        }}
-      />
-      <button
-        type="button"
-        onClick={() => void submit(text)}
-        disabled={disabled || !text.trim()}
-        className="rounded-md px-3 py-2"
-        style={{ background: "var(--accent-strong)", color: "#fff", fontSize: 13 }}
-      >
-        Send
-      </button>
+    <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "12px 10px 6px" }}>
+        <Link href="/" aria-label="Back to nook" style={{ display: "inline-flex", alignItems: "center", gap: 4, color: "var(--text-muted)", textDecoration: "none", fontSize: 12 }}>
+          <ArrowLeft size={14} aria-hidden="true" /> nook
+        </Link>
+        <span style={{ marginLeft: 2, fontSize: 11, fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--text-muted)" }}>Rooms</span>
+        <button
+          type="button"
+          onClick={() => setDraft(draft === null ? "" : null)}
+          aria-label="New room"
+          title="New room"
+          style={{ marginLeft: "auto", display: "inline-flex", width: 26, height: 26, alignItems: "center", justifyContent: "center", border: "1px solid var(--border)", borderRadius: "var(--radius-control)", background: "var(--bg-panel)", color: "var(--text)", cursor: "pointer" }}
+        >
+          <Plus size={14} aria-hidden="true" />
+        </button>
+      </div>
+      {draft !== null && (
+        <form
+          style={{ display: "flex", gap: 6, padding: "0 10px 8px" }}
+          onSubmit={async ev => {
+            ev.preventDefault();
+            const name = draft.trim();
+            if (name && (await onCreate(name))) setDraft(null);
+          }}
+        >
+          <input
+            autoFocus
+            value={draft}
+            onChange={ev => setDraft(ev.target.value)}
+            placeholder="room name"
+            style={{ minWidth: 0, flex: 1, height: 30, padding: "0 9px", border: "1px solid var(--border)", borderRadius: "var(--radius-control)", background: "var(--bg)", color: "var(--text)", font: "inherit", fontSize: 13 }}
+          />
+          <button type="submit" style={{ height: 30, padding: "0 10px", border: 0, borderRadius: "var(--radius-control)", background: "var(--accent-strong)", color: "var(--on-accent)", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>create</button>
+        </form>
+      )}
+      <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "0 6px 8px" }}>
+        {error && <div style={{ padding: "8px 10px", color: "var(--status-error)", fontSize: 12 }}>{error}</div>}
+        {!error && loaded && rooms.length === 0 && <div style={{ padding: "8px 10px", color: "var(--text-muted)", fontSize: 12 }}>no rooms yet</div>}
+        {rooms.map(r => {
+          const isSelected = r.id === selected;
+          return (
+            <button
+              key={r.id}
+              type="button"
+              onClick={() => onSelect(r.id)}
+              aria-current={isSelected ? "true" : undefined}
+              style={{
+                position: "relative", display: "flex", alignItems: "center", gap: 7, width: "100%", minHeight: 34, margin: "1px 0", padding: "0 8px",
+                border: 0, borderRadius: "var(--radius-control)", textAlign: "left", cursor: "pointer", color: "var(--text)",
+                background: isSelected ? "color-mix(in srgb, var(--bg-selected) 70%, transparent)" : "transparent",
+              }}
+            >
+              {isSelected && <span aria-hidden="true" style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 2, borderRadius: 1, background: "var(--accent)" }} />}
+              <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12.5, fontWeight: isSelected ? 600 : 500 }}>{r.name}</span>
+              {r.running && <span aria-hidden className="live-status-dot live-pulse inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-accent" />}
+              <span style={{ color: r.running ? "var(--accent)" : "var(--text-dim)", fontSize: 10, fontVariantNumeric: "tabular-nums", flexShrink: 0 }}>{r.running ? "running" : relative(r.last_at)}</span>
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 }
 
 export function RoomView({ initialRoom }: { initialRoom: string | null }) {
-  const { rooms, create } = useRooms();
+  const isMobile = useIsMobile();
+  const { rooms, error: roomsError, loaded, create } = useRooms(3000);
   const [roomId, setRoomId] = useState<string | null>(initialRoom);
-  const { entries, connected, error, say } = useRoom(roomId);
-  const { acks, open } = useMemo(() => ackIndex(entries), [entries]);
-  const bottom = useRef<HTMLDivElement>(null);
+  const { entries, connected, error, say, stop } = useRoom(roomId);
+  const model = modelRoom(entries);
   const [showList, setShowList] = useState(!initialRoom);
-
-  useEffect(() => { bottom.current?.scrollIntoView({ block: "end" }); }, [entries.length]);
-  useEffect(() => {
-    if (roomId) window.history.replaceState(null, "", `/rooms/${roomId}`);
-  }, [roomId]);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const endRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<ChatInputHandle>(null);
+  const { unlockAudio } = useAudio();
 
   const room = rooms.find(r => r.id === roomId);
+  const running = room?.running ?? false;
+  // The latest status signal in the current turn, if any: the "thought" line.
+  const status = latestStatus(entries);
+  const history = entries.filter(e => e.kind === "message" && e.body.role === "user").map(e => str(e.body.text));
+
+  useEffect(() => { endRef.current?.scrollIntoView({ block: "end" }); }, [entries.length]);
+  useEffect(() => {
+    // Under nook the app is at /rooms/<id>; served by nookd it is /r/<id>.
+    if (roomId) window.history.replaceState(null, "", `${location.pathname.startsWith("/rooms") ? "/rooms" : "/r"}/${roomId}`);
+  }, [roomId]);
+
+  const select = useCallback((id: string) => { setRoomId(id); setShowList(false); }, []);
+  const handleSend = useCallback(async (text: string) => say(text), [say]);
+  const handleAbort = useCallback(() => { void stop(); }, [stop]);
+
+  const list = (
+    <RoomList
+      rooms={rooms}
+      error={roomsError}
+      loaded={loaded}
+      selected={roomId}
+      onSelect={select}
+      onCreate={async name => {
+        const r = await create(name);
+        if (r) select(r.id);
+        return Boolean(r);
+      }}
+    />
+  );
 
   return (
-    <div className="flex h-dvh overflow-hidden" style={{ background: "var(--bg)", color: "var(--text)" }}>
-      <aside
-        className={`${showList ? "flex" : "hidden"} w-full shrink-0 flex-col overflow-y-auto border-r md:flex md:w-64`}
-        style={{ borderColor: "var(--border)" }}
-      >
-        <div className="flex items-center justify-between p-2">
-          <span style={{ fontWeight: 600 }}>Rooms</span>
-          <button
-            type="button"
-            className="rounded px-2 py-1"
-            style={{ fontSize: 12, background: "var(--bg-panel)" }}
-            onClick={async () => {
-              const name = window.prompt("Room name");
-              if (!name) return;
-              const r = await create(name);
-              if (r) { setRoomId(r.id); setShowList(false); }
-            }}
-          >
-            new
-          </button>
-        </div>
-        {rooms.map(r => (
-          <button
-            key={r.id}
-            type="button"
-            onClick={() => { setRoomId(r.id); setShowList(false); }}
-            className="flex items-center justify-between px-3 py-2 text-left"
-            style={{ background: r.id === roomId ? "var(--bg-panel)" : undefined, fontSize: 13 }}
-          >
-            <span className="truncate">{r.name}</span>
-            <span style={{ color: r.running ? "var(--accent-strong)" : "var(--text-muted)", fontSize: 11 }}>
-              {r.running ? "running" : r.last_at.slice(5, 16).replace("T", " ")}
-            </span>
-          </button>
-        ))}
-      </aside>
-      <main className={`${showList ? "hidden" : "flex"} min-w-0 flex-1 flex-col md:flex`}>
-        <header className="flex items-center gap-2 border-b p-2" style={{ borderColor: "var(--border)" }}>
-          <button type="button" className="md:hidden" onClick={() => setShowList(true)} style={{ fontSize: 13 }}>rooms</button>
-          <span style={{ fontWeight: 600 }}>{room?.name ?? (roomId ? roomId.slice(0, 8) : "no room")}</span>
-          <span style={{ fontSize: 11, color: connected ? "var(--status-success)" : "var(--text-muted)" }}>{connected ? "live" : "…"}</span>
-          {open.size > 0 && <span style={{ fontSize: 11, color: "var(--accent-strong)" }}>open: {[...open].join(" ")}</span>}
-          {error && <span style={{ fontSize: 11, color: "var(--status-error)" }}>{error}</span>}
-          <Link href="/" className="ml-auto" style={{ fontSize: 12, color: "var(--text-muted)" }}>omp</Link>
-        </header>
-        <div className="flex-1 space-y-1 overflow-y-auto py-2">
-          {entries.map(e => <Row key={e.seq} e={e} acks={acks} open={open} />)}
-          <div ref={bottom} />
-        </div>
-        {roomId && <Composer onSend={t => say(t)} disabled={!roomId} />}
-      </main>
+    <div style={{ display: "flex", height: "100dvh", overflow: "hidden", background: "var(--bg)", color: "var(--text)" }}>
+      {(!isMobile || showList) && (
+        <aside style={{ width: isMobile ? "100%" : 260, flexShrink: 0, minHeight: 0, borderRight: isMobile ? 0 : "1px solid var(--border)", background: "var(--bg-panel)" }}>
+          {list}
+        </aside>
+      )}
+      {(!isMobile || !showList) && (
+        <main style={{ display: "flex", flexDirection: "column", flex: 1, minWidth: 0, minHeight: 0 }}>
+          <header style={{ display: "flex", alignItems: "center", gap: 8, height: 44, padding: `0 ${COLUMN_PADDING}px`, borderBottom: "1px solid var(--border)", flexShrink: 0 }}>
+            {isMobile && (
+              <button type="button" onClick={() => setShowList(true)} aria-label="Rooms" style={{ display: "inline-flex", alignItems: "center", gap: 4, border: 0, background: "none", color: "var(--text-muted)", fontSize: 12, cursor: "pointer", padding: 0 }}>
+                <ArrowLeft size={14} aria-hidden="true" /> rooms
+              </button>
+            )}
+            <span style={{ fontWeight: 600, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{room?.name ?? (roomId ? roomId.slice(0, 8) : "no room")}</span>
+            <span title={connected ? "Live" : "Reconnecting"} aria-label={connected ? "Live" : "Reconnecting"} style={{ width: 7, height: 7, borderRadius: "50%", background: connected ? "var(--status-success)" : "var(--text-dim)", flexShrink: 0 }} />
+            {error && <span style={{ color: "var(--status-error)", fontSize: 11 }}>{error}</span>}
+            <Link href="/" style={{ marginLeft: "auto", color: "var(--text-muted)", fontSize: 12, textDecoration: "none" }}>nook</Link>
+          </header>
+          <div ref={scrollRef} className="min-w-0 flex-1 overflow-y-auto pt-6">
+            <div style={{ padding: `0 ${COLUMN_PADDING}px` }}>
+              <div style={{ maxWidth: CHAT_COLUMN_MAX_WIDTH, margin: "0 auto" }}>
+                {roomId ? <Rows model={model} /> : <div style={{ color: "var(--text-muted)", fontSize: 13, padding: 24, textAlign: "center" }}>Pick a room.</div>}
+                <RoomStatus running={running} status={status} open={model.open} />
+                <div ref={endRef} />
+              </div>
+            </div>
+          </div>
+          {roomId && (
+            <div style={{ flexShrink: 0, padding: `0 ${COLUMN_PADDING}px` }}>
+              <div style={{ maxWidth: CHAT_COLUMN_MAX_WIDTH, margin: "0 auto" }}>
+                <ChatInput
+                  ref={inputRef}
+                  onSend={handleSend}
+                  onAbort={handleAbort}
+                  isStreaming={running}
+                  draftKey={`room:${roomId}`}
+                  inputHistory={history}
+                  onAudioUnlock={unlockAudio}
+                />
+              </div>
+            </div>
+          )}
+        </main>
+      )}
     </div>
   );
 }

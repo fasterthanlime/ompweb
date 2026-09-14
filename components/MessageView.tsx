@@ -1750,6 +1750,11 @@ function isReadToolName(toolName: string): boolean {
 function getToolResultMeta(result: ToolResultMessage | undefined): string | null {
   if (!result || !isRecord(result.details)) return null;
   const details = result.details;
+  // A nookd room result: its ref and the ack that paid for it.
+  if (typeof details.ref === "string") {
+    const ack = isRecord(details.ack) ? details.ack : null;
+    return ack ? `${details.ref} · ${String(ack.verdict)} ${String(ack.text ?? "")}`.trim() : `${details.ref} · unacked`;
+  }
   const usage = isRecord(details.usage) ? details.usage : details;
   const readNumber = (...keys: string[]): number | undefined => {
     for (const key of keys) {

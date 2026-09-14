@@ -85,22 +85,34 @@ export function useRoom(roomId: string | null) {
     return res.ok;
   }, [roomId]);
 
-  return { entries, connected, error, say };
+  const stop = useCallback(async () => {
+    if (!roomId) return false;
+    const res = await fetch(`/api/rooms/${roomId}/stop`, { method: "POST" });
+    return res.ok;
+  }, [roomId]);
+
+  return { entries, connected, error, say, stop };
 }
 
 /** The room list, refreshed on an interval; cheap, and rooms rarely change. */
 export function useRooms(intervalMs = 5000) {
   const [rooms, setRooms] = useState<RoomSummary[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [loaded, setLoaded] = useState(false);
   useEffect(() => {
     let stop = false;
     const tick = async () => {
       try {
         const res = await fetch("/api/rooms", { cache: "no-store" });
-        if (!res.ok) throw new Error(`rooms: ${res.status}`);
+        if (!res.ok) {
+          const body = (await res.json().catch(() => null)) as { error?: string } | null;
+          throw new Error(body?.error ?? `rooms: ${res.status}`);
+        }
         if (!stop) { setRooms((await res.json()) as RoomSummary[]); setError(null); }
       } catch (e) {
-        if (!stop) setError(String(e));
+        if (!stop) setError(e instanceof Error ? e.message : String(e));
+      } finally {
+        if (!stop) setLoaded(true);
       }
     };
     void tick();
@@ -116,5 +128,5 @@ export function useRooms(intervalMs = 5000) {
     if (!res.ok) return null;
     return (await res.json()) as { id: string };
   }, []);
-  return { rooms, error, create };
+  return { rooms, error, loaded, create };
 }
