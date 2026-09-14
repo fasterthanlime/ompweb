@@ -13,21 +13,21 @@ settings:
     INFOPLIST_KEY_UILaunchScreen_Generation: YES
     INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
     NOOK_LOGIN_URL: https://auth.vxn.rs/
-    NOOK_SERVER_URL: https://omp-amos.vxn.rs/
+    NOOK_SERVER_URL: https://nook.vxn.rs/
     CURRENT_PROJECT_VERSION: 1
     MARKETING_VERSION: '0.1.0'
     TARGETED_DEVICE_FAMILY: '1,2'
 targets:
-  Nook:
+  Nook: &nookApp
     type: application
     platform: iOS
     sources: [Nook]
-    entitlements:
+    entitlements: &nookEntitlements
       path: Generated/Nook.entitlements
       properties:
         com.apple.developer.associated-domains:
           - webcredentials:auth.vxn.rs
-    info:
+    info: &nookInfo
       path: Generated/Nook-Info.plist
       properties:
         NookServerURL: $(NOOK_SERVER_URL)
@@ -43,6 +43,20 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: rs.vxn.nook
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+  NookLegacy:
+    <<: *nookApp
+    entitlements:
+      <<: *nookEntitlements
+      path: Generated/NookLegacy.entitlements
+    info:
+      <<: *nookInfo
+      path: Generated/NookLegacy-Info.plist
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: rs.vxn.nook.legacy
+        INFOPLIST_KEY_CFBundleDisplayName: Nook Legacy
+        NOOK_SERVER_URL: https://omp-amos.vxn.rs/
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
   NookTests:
     type: bundle.unit-test
     platform: iOS
@@ -56,3 +70,7 @@ schemes:
         Nook: all
     test:
       targets: [NookTests]
+  NookLegacy:
+    build:
+      targets:
+        NookLegacy: all

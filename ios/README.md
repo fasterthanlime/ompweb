@@ -28,7 +28,7 @@ xcodebuild -project Nook.xcodeproj -scheme Nook \
 
 `NOOK_SERVER_URL` and `NOOK_LOGIN_URL` in `project.yml` populate the generated
 Info.plist.
-Defaults are `https://omp-amos.vxn.rs/` and `https://auth.vxn.rs/`. Login navigation
+Defaults are `https://nook.vxn.rs/` and `https://auth.vxn.rs/`. Login navigation
 is allowed. The configured server origin and `https://nook.vxn.rs` (HTTPS port 443)
 are trusted for navigation and main-frame audio access.
 External links open outside the app. Cookie storage survives app launches.
@@ -98,3 +98,14 @@ The auth service uses RP ID `auth.vxn.rs` and publishes
 `B2N6FSRTPV.rs.vxn.nook` in `webcredentials.apps`. The signed provisioning
 profile must support Associated Domains. Regenerate and reinstall after changes;
 physical passkey sign-in remains the acceptance check.
+
+## Nook Legacy
+
+The `Nook` scheme builds `rs.vxn.nook`, opening `https://nook.vxn.rs/`.
+The `NookLegacy` scheme builds `rs.vxn.nook.legacy`, displayed as **Nook Legacy**,
+opening `https://omp-amos.vxn.rs/`. Both can be installed together and use separate
+cookie storage. They share the native shell and microphone bridge.
+
+Passkeys in Legacy require the auth service association file to also list
+`B2N6FSRTPV.rs.vxn.nook.legacy` in `webcredentials.apps`. Keep the existing
+`B2N6FSRTPV.rs.vxn.nook` entry. Server deployment remains with the server agent.

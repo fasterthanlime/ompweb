@@ -18,7 +18,7 @@ final class NookWebController: UIViewController, WKNavigationDelegate, WKUIDeleg
     private let audio = NativeAudio()
     private var webView: WKWebView!
     private var commands: [UUID: Task<Void, Never>] = [:]
-    private let serverURL = URL(string: Bundle.main.object(forInfoDictionaryKey: "NookServerURL") as? String ?? "https://omp-amos.vxn.rs/")!
+    private let serverURL = URL(string: Bundle.main.object(forInfoDictionaryKey: "NookServerURL") as? String ?? "https://nook.vxn.rs/")!
     private let loginURL = URL(string: Bundle.main.object(forInfoDictionaryKey: "NookLoginURL") as? String ?? "https://auth.vxn.rs/")!
     private let logger = Logger(subsystem: "rs.vxn.nook", category: "web")
 
