@@ -64,7 +64,9 @@ final class NookWebController: UIViewController, WKNavigationDelegate, WKUIDeleg
 
     private func trusted(_ url: URL?) -> Bool {
         guard let url else { return false }
-        return url.scheme == serverURL.scheme && url.host == serverURL.host && url.port == serverURL.port
+        let configuredOrigin = url.scheme == serverURL.scheme && url.host == serverURL.host && url.port == serverURL.port
+        let nookOrigin = url.scheme == "https" && url.host == "nook.vxn.rs" && (url.port == nil || url.port == 443)
+        return configuredOrigin || nookOrigin
     }
 
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage,
