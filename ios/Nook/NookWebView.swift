@@ -93,7 +93,11 @@ final class NookWebController: UIViewController, WKNavigationDelegate, WKUIDeleg
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
                  decisionHandler: @escaping @MainActor (WKNavigationActionPolicy) -> Void) {
         guard let url = navigationAction.request.url else { decisionHandler(.cancel); return }
-        let login = sameOrigin(url, loginURL)
+        // Signing in to the rooms origin means a hop to the account's own
+        // PDS (bsky.social or wherever) and back; that is any https origin,
+        // so main-frame https navigation is allowed. `trusted` still bounds
+        // what may reach the audio bridge.
+        let login = sameOrigin(url, loginURL) || (navigationAction.targetFrame?.isMainFrame ?? false && url.scheme == "https")
         if trusted(url) || login { decisionHandler(.allow) }
         else {
             decisionHandler(.cancel)
