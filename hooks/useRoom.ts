@@ -162,9 +162,20 @@ export interface NodeQuery {
   room?: string;
 }
 
-/** A narrowing of the graph, refreshed on an interval and on demand. */
-export function useNodes(query: NodeQuery, intervalMs = 4000) {
+export interface GraphEdge {
+  from_id: string;
+  to_id: string;
+  kind: string;
+}
+
+/**
+ * A narrowing of the graph, refreshed on an interval and on demand. With
+ * `withEdges`, the edges among the result come too (and the nodes those
+ * edges reach outside it), for drawing.
+ */
+export function useNodes(query: NodeQuery, intervalMs = 4000, withEdges = false) {
   const [nodes, setNodes] = useState<NodeRow[]>([]);
+  const [edges, setEdges] = useState<GraphEdge[]>([]);
   const [error, setError] = useState<string | null>(null);
   const key = JSON.stringify(query);
   const load = useCallback(async () => {
@@ -172,14 +183,20 @@ export function useNodes(query: NodeQuery, intervalMs = 4000) {
     const params = new URLSearchParams();
     for (const [k, v] of Object.entries(q)) if (v !== undefined && v !== null && v !== "") params.set(k, String(v));
     try {
-      const res = await fetch(`/api/nodes?${params}`, { cache: "no-store" });
+      const res = await fetch(`/api/nodes${withEdges ? "/graph" : ""}?${params}`, { cache: "no-store" });
       if (!res.ok) throw new Error(`nodes: ${res.status}`);
-      setNodes((await res.json()) as NodeRow[]);
+      if (withEdges) {
+        const g = (await res.json()) as { nodes: NodeRow[]; edges: GraphEdge[] };
+        setNodes(g.nodes);
+        setEdges(g.edges);
+      } else {
+        setNodes((await res.json()) as NodeRow[]);
+      }
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
-  }, [key]);
+  }, [key, withEdges]);
   useEffect(() => {
     void load();
     const timer = setInterval(() => void load(), intervalMs);
@@ -194,5 +211,5 @@ export function useNodes(query: NodeQuery, intervalMs = 4000) {
     const res = await fetch(`/api/nodes/${id}/comments`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ actor, text }) });
     return res.ok;
   }, []);
-  return { nodes, error, reload: load, patch, comment };
+  return { nodes, edges, error, reload: load, patch, comment };
 }
