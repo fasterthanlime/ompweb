@@ -20,6 +20,7 @@ export interface RoomSummary {
   last_seq: number;
   last_at: string;
   running: boolean;
+  expression: { kaomoji: string; caption: string } | null;
 }
 
 /**
@@ -63,7 +64,7 @@ export function useRoom(roomId: string | null) {
       source.onopen = () => setConnected(true);
       source.onerror = () => setConnected(false);
       // nookd names each SSE event after the entry kind; listen for all of them.
-      for (const kind of ["message", "tool_call", "tool_result", "signal", "teach", "error", "usage", "reasoning"]) {
+      for (const kind of ["message", "tool_call", "tool_result", "signal", "teach", "error", "usage", "reasoning", "plan", "expression"]) {
         source.addEventListener(kind, ev => append([JSON.parse((ev as MessageEvent).data) as RoomEntry]));
       }
     })().catch(e => { if (!cancelled) setError(String(e)); });

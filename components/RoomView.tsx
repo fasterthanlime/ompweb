@@ -9,7 +9,7 @@ import { useAudio } from "@/hooks/useAudio";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { usePrefersReducedMotion } from "@/hooks/usePrefersReducedMotion";
 import { useRoom, useRooms, type RoomEntry } from "@/hooks/useRoom";
-import { modelRoom, str, type RoomModel } from "@/lib/room-entries";
+import { modelRoom, str, type PlanStep, type RoomModel } from "@/lib/room-entries";
 import { CHAT_COLUMN_MAX_WIDTH } from "@/lib/chat-layout";
 import type { AgentMessage } from "@/lib/types";
 
@@ -22,13 +22,14 @@ import type { AgentMessage } from "@/lib/types";
 
 const COLUMN_PADDING = 16;
 
-function SignalRow({ e, open }: { e: RoomEntry; open: Set<string> }) {
+function SignalRow({ e, open, asked }: { e: RoomEntry; open: Set<string>; asked: boolean }) {
   const b = e.body;
   const signal = str(b.signal);
   const ref = str(b.ref);
+  // An answered question fades; an open one is the loudest thing on screen.
   const tone =
     signal === "claim" ? "var(--status-success)"
-    : signal === "ask" ? "var(--accent-strong)"
+    : signal === "ask" ? (asked ? "var(--accent-strong)" : "var(--text-dim)")
     : signal === "found" ? "var(--accent)"
     : "var(--text)";
   const openList = Array.isArray(b.open) ? (b.open as string[]) : [];
@@ -43,7 +44,7 @@ function SignalRow({ e, open }: { e: RoomEntry; open: Set<string> }) {
         fontSize: 12.5,
       }}
     >
-      <span style={{ color: tone, fontWeight: 600, flexShrink: 0 }}>{signal}</span>
+      <span style={{ color: tone, fontWeight: 600, flexShrink: 0 }}>{signal === "ask" ? (asked ? "question" : "asked") : signal}</span>
       {ref && <span style={{ fontFamily: "var(--font-mono)", color: open.has(ref) ? "var(--accent-strong)" : "var(--text-dim)", flexShrink: 0 }}>{ref}</span>}
       <span style={{ minWidth: 0 }}>{str(b.text)}</span>
       {signal === "claim" && openList.length > 0 && (
@@ -62,7 +63,8 @@ function NoteRow({ label, text, tone }: { label: string; text: string; tone: str
 }
 
 function Rows({ model }: { model: RoomModel }) {
-  const { rows, toolResults, open } = model;
+  const { rows, toolResults, open, openAsks } = model;
+  const openSeqs = new Set(openAsks.map(a => a.seq));
   return (
     <>
       {rows.map((row, i) => {
@@ -82,7 +84,7 @@ function Rows({ model }: { model: RoomModel }) {
             />
           );
         }
-        if (e.kind === "signal") return <SignalRow key={e.seq} e={e} open={open} />;
+        if (e.kind === "signal") return <SignalRow key={e.seq} e={e} open={open} asked={openSeqs.has(e.seq)} />;
         if (e.kind === "teach") return <NoteRow key={e.seq} label="teacher" text={str(e.body.text)} tone="var(--accent-strong)" />;
         if (e.kind === "error") return <NoteRow key={e.seq} label="error" text={str(e.body.text)} tone="var(--status-error)" />;
         return null;
@@ -111,6 +113,25 @@ function latestStatus(entries: RoomEntry[]): string | null {
   return pendingIntent;
 }
 
+const STEP_MARK: Record<PlanStep["state"], string> = { todo: "○", doing: "◐", done: "●", dropped: "×" };
+
+function Plan({ steps }: { steps: PlanStep[] }) {
+  const done = steps.filter(s => s.state === "done").length;
+  return (
+    <div style={{ margin: "0 0 12px", padding: "8px 12px", border: "1px solid var(--border)", borderRadius: "var(--radius-control)", background: "var(--bg-subtle)", fontSize: 12.5 }}>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 4, color: "var(--text-muted)", fontSize: 11, fontWeight: 600, letterSpacing: "0.05em", textTransform: "uppercase" }}>
+        plan <span style={{ fontWeight: 400, letterSpacing: 0, textTransform: "none" }}>{done}/{steps.length}</span>
+      </div>
+      {steps.map((st, i) => (
+        <div key={i} style={{ display: "flex", gap: 8, alignItems: "baseline", color: st.state === "done" || st.state === "dropped" ? "var(--text-dim)" : "var(--text)", textDecoration: st.state === "dropped" ? "line-through" : undefined }}>
+          <span aria-label={st.state} style={{ flexShrink: 0, color: st.state === "doing" ? "var(--accent)" : "inherit", fontFamily: "var(--font-mono)" }}>{STEP_MARK[st.state] ?? "○"}</span>
+          <span>{st.text}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function RoomStatus({ running, status, open }: { running: boolean; status: string | null; open: Set<string> }) {
   const reducedMotion = usePrefersReducedMotion();
   if (!running && open.size === 0) return null;
@@ -124,7 +145,7 @@ function RoomStatus({ running, status, open }: { running: boolean; status: strin
 }
 
 function RoomList({ rooms, error, loaded, selected, onSelect, onCreate }: {
-  rooms: { id: string; name: string; last_at: string; running: boolean }[];
+  rooms: { id: string; name: string; last_at: string; running: boolean; expression: { kaomoji: string; caption: string } | null }[];
   error: string | null;
   loaded: boolean;
   selected: string | null;
@@ -201,7 +222,14 @@ function RoomList({ rooms, error, loaded, selected, onSelect, onCreate }: {
               }}
             >
               {isSelected && <span aria-hidden="true" style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 2, borderRadius: 1, background: "var(--accent)" }} />}
-              <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12.5, fontWeight: isSelected ? 600 : 500 }}>{r.name}</span>
+              <span style={{ display: "flex", flexDirection: "column", flex: 1, minWidth: 0, gap: 1 }}>
+                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12.5, fontWeight: isSelected ? 600 : 500 }}>{r.name}</span>
+                {r.expression && (
+                  <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 11, color: "var(--text-dim)" }}>
+                    <span style={{ fontFamily: "var(--font-mono)", color: "var(--text-muted)" }}>{r.expression.kaomoji}</span> {r.expression.caption}
+                  </span>
+                )}
+              </span>
               {r.running && <span aria-hidden className="live-status-dot live-pulse inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-accent" />}
               <span style={{ color: r.running ? "var(--accent)" : "var(--text-dim)", fontSize: 10, fontVariantNumeric: "tabular-nums", flexShrink: 0 }}>{r.running ? "running" : relative(r.last_at)}</span>
             </button>
@@ -272,12 +300,20 @@ export function RoomView({ initialRoom }: { initialRoom: string | null }) {
             )}
             <span style={{ fontWeight: 600, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{room?.name ?? (roomId ? roomId.slice(0, 8) : "no room")}</span>
             <span title={connected ? "Live" : "Reconnecting"} aria-label={connected ? "Live" : "Reconnecting"} style={{ width: 7, height: 7, borderRadius: "50%", background: connected ? "var(--status-success)" : "var(--text-dim)", flexShrink: 0 }} />
+            {model.expression && (
+              <span title={model.expression.caption} style={{ display: "inline-flex", alignItems: "baseline", gap: 6, minWidth: 0, color: "var(--text-muted)", fontSize: 12 }}>
+                <span style={{ fontFamily: "var(--font-mono)", color: "var(--text)", flexShrink: 0 }}>{model.expression.kaomoji}</span>
+                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{model.expression.caption}</span>
+              </span>
+            )}
+            {model.openAsks.length > 0 && <span style={{ color: "var(--accent-strong)", fontSize: 11, fontWeight: 600, flexShrink: 0 }}>{model.openAsks.length} open question{model.openAsks.length === 1 ? "" : "s"}</span>}
             {error && <span style={{ color: "var(--status-error)", fontSize: 11 }}>{error}</span>}
             <Link href="/" style={{ marginLeft: "auto", color: "var(--text-muted)", fontSize: 12, textDecoration: "none" }}>nook</Link>
           </header>
           <div ref={scrollRef} className="min-w-0 flex-1 overflow-y-auto pt-6">
             <div style={{ padding: `0 ${COLUMN_PADDING}px` }}>
               <div style={{ maxWidth: CHAT_COLUMN_MAX_WIDTH, margin: "0 auto" }}>
+                {model.plan && model.plan.length > 0 && <Plan steps={model.plan} />}
                 {roomId ? <Rows model={model} /> : <div style={{ color: "var(--text-muted)", fontSize: 13, padding: 24, textAlign: "center" }}>Pick a room.</div>}
                 <RoomStatus running={running} status={status} open={model.open} />
                 <div ref={endRef} />
