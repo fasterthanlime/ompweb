@@ -76,12 +76,12 @@ export function useRoom(roomId: string | null) {
     };
   }, [roomId]);
 
-  const say = useCallback(async (text: string, author = "amos") => {
+  const say = useCallback(async (text: string) => {
     if (!roomId) return false;
     const res = await fetch(`/api/rooms/${roomId}/entries`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ author, text }),
+      body: JSON.stringify({ text }),
     });
     return res.ok;
   }, [roomId]);
@@ -202,13 +202,13 @@ export function useNodes(query: NodeQuery, intervalMs = 4000, withEdges = false)
     const timer = setInterval(() => void load(), intervalMs);
     return () => clearInterval(timer);
   }, [load, intervalMs]);
-  const patch = useCallback(async (id: string, body: Record<string, unknown>, actor = "amos") => {
-    const res = await fetch(`/api/nodes/${id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ actor, ...body }) });
+  const patch = useCallback(async (id: string, body: Record<string, unknown>) => {
+    const res = await fetch(`/api/nodes/${id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
     await load();
     return res.ok;
   }, [load]);
-  const comment = useCallback(async (id: string, text: string, actor = "amos") => {
-    const res = await fetch(`/api/nodes/${id}/comments`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ actor, text }) });
+  const comment = useCallback(async (id: string, text: string) => {
+    const res = await fetch(`/api/nodes/${id}/comments`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text }) });
     return res.ok;
   }, []);
   return { nodes, edges, error, reload: load, patch, comment };

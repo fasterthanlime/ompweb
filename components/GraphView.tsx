@@ -6,15 +6,16 @@ import { ArrowLeft } from "lucide-react";
 import { NodeList } from "@/components/NodeList";
 import { NodeGraph } from "@/components/NodeGraph";
 import { useNodes, type NodeRow } from "@/hooks/useRoom";
+import { useMe } from "@/hooks/useMe";
 
 /**
  * The graph, narrowed. Views are saved filters over the same rows; these
  * are the ones a human reaches for on a phone. The elder's are the same
  * queries.
  */
-const VIEWS: { id: string; label: string; query: Record<string, string | boolean> }[] = [
-  { id: "mine", label: "mine", query: { assignee: "amos" } },
-  { id: "questions", label: "questions", query: { assignee: "amos", tag: "question" } },
+const views = (me: string): { id: string; label: string; query: Record<string, string | boolean> }[] => [
+  { id: "mine", label: "mine", query: { assignee: me } },
+  { id: "questions", label: "questions", query: { assignee: me, tag: "question" } },
   { id: "doing", label: "doing", query: { state: "doing" } },
   { id: "blocked", label: "blocked", query: { blocked: true } },
   { id: "open", label: "all open", query: {} },
@@ -24,6 +25,8 @@ const VIEWS: { id: string; label: string; query: Record<string, string | boolean
 const roomsHref = typeof location !== "undefined" && location.pathname.startsWith("/rooms") ? "/rooms" : "/";
 
 export function GraphView() {
+  const me = useMe()?.handle ?? "";
+  const VIEWS = views(me);
   const [view, setView] = useState("mine");
   const [project, setProject] = useState("");
   const [drawn, setDrawn] = useState(false);

@@ -9,6 +9,7 @@ import { useAudio } from "@/hooks/useAudio";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { usePrefersReducedMotion } from "@/hooks/usePrefersReducedMotion";
 import { useNodes, useRoom, useRooms, type RoomEntry } from "@/hooks/useRoom";
+import { signOut, useMe } from "@/hooks/useMe";
 import { NodeList } from "@/components/NodeList";
 import { modelRoom, str, type RoomModel } from "@/lib/room-entries";
 import { CHAT_COLUMN_MAX_WIDTH } from "@/lib/chat-layout";
@@ -223,6 +224,22 @@ function RoomList({ rooms, error, loaded, selected, onSelect, onCreate }: {
   );
 }
 
+/** The signed-in handle; tap to sign out. */
+function Who() {
+  const me = useMe();
+  if (!me) return null;
+  return (
+    <button
+      type="button"
+      onClick={() => { if (confirm(`Sign out ${me.handle}?`)) void signOut(); }}
+      title={me.did}
+      style={{ marginLeft: "auto", color: "var(--text-muted)", fontSize: 12, background: "none", border: 0, padding: 0, font: "inherit", cursor: "pointer" }}
+    >
+      @{me.handle}
+    </button>
+  );
+}
+
 /** Under nook the graph is /rooms/graph; served by nookd it is /graph. */
 const graphHref = typeof location !== "undefined" && location.pathname.startsWith("/rooms") ? "/rooms/graph" : "/graph";
 
@@ -296,7 +313,7 @@ export function RoomView({ initialRoom }: { initialRoom: string | null }) {
             )}
             {openQuestions > 0 && <span style={{ color: "var(--accent-strong)", fontSize: 11, fontWeight: 600, flexShrink: 0 }}>{openQuestions} open question{openQuestions === 1 ? "" : "s"}</span>}
             {error && <span style={{ color: "var(--status-error)", fontSize: 11 }}>{error}</span>}
-            <Link href="/" style={{ marginLeft: "auto", color: "var(--text-muted)", fontSize: 12, textDecoration: "none" }}>nook</Link>
+            <Who />
           </header>
           <div ref={scrollRef} className="min-w-0 flex-1 overflow-y-auto pt-6">
             <div style={{ padding: `0 ${COLUMN_PADDING}px` }}>

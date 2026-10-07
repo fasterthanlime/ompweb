@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import type { NodeRow } from "@/hooks/useRoom";
+import { useMe } from "@/hooks/useMe";
 
 /**
  * A narrowing of the graph as a list. Used above a room (that room's
@@ -33,6 +34,7 @@ export function NodeList({ nodes, title, compact, onPatch, onComment }: {
   onPatch?: (id: string, body: Record<string, unknown>) => Promise<boolean>;
   onComment?: (id: string, text: string) => Promise<boolean>;
 }) {
+  const me = useMe()?.handle ?? "";
   const [openId, setOpenId] = useState<string | null>(null);
   const [reason, setReason] = useState("");
   const done = nodes.filter(n => n.node.state === "done").length;
@@ -66,7 +68,7 @@ export function NodeList({ nodes, title, compact, onPatch, onComment }: {
             >
               <span aria-label={n.state} style={{ flexShrink: 0, color: n.state === "doing" ? "var(--accent)" : blocked.length ? "var(--accent-strong)" : "inherit", fontFamily: "var(--font-mono)" }}>{blocked.length && !closed ? "◌" : MARK[n.state]}</span>
               <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: isOpen ? "normal" : "nowrap" }}>{n.title}</span>
-              {n.assignee && <span style={{ flexShrink: 0, color: n.assignee === "amos" ? "var(--accent)" : "var(--text-muted)", fontSize: 11 }}>@{n.assignee}</span>}
+              {n.assignee && <span style={{ flexShrink: 0, color: n.assignee === me ? "var(--accent)" : "var(--text-muted)", fontSize: 11 }}>@{n.assignee}</span>}
               {due && !closed && <span style={{ flexShrink: 0, color: due.late ? "var(--status-error)" : "var(--text-muted)", fontSize: 11, fontVariantNumeric: "tabular-nums" }}>{due.text}</span>}
               {n.priority > 0 && !closed && <span style={{ flexShrink: 0, color: "var(--accent-strong)", fontSize: 10, fontWeight: 700 }}>p{n.priority}</span>}
             </button>
@@ -95,7 +97,7 @@ export function NodeList({ nodes, title, compact, onPatch, onComment }: {
                     {!closed && n.state !== "doing" && <button type="button" onClick={() => void onPatch(n.id, { state: "doing" })} style={btn("var(--accent)")}>doing</button>}
                     {!closed && <button type="button" onClick={() => void closeWith(r, "dropped")} style={btn("var(--text-muted)")}>drop</button>}
                     {closed && <button type="button" onClick={() => void onPatch(n.id, { state: "open" })} style={btn("var(--accent)")}>reopen</button>}
-                    {n.assignee !== "amos" && !closed && <button type="button" onClick={() => void onPatch(n.id, { assignee: "amos" })} style={btn("var(--text-muted)")}>take</button>}
+                    {n.assignee !== me && !closed && <button type="button" onClick={() => void onPatch(n.id, { assignee: me })} style={btn("var(--text-muted)")}>take</button>}
                   </div>
                 )}
               </div>
